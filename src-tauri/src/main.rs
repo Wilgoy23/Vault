@@ -39,34 +39,32 @@ fn vault_exists() -> bool {
 }
 
 #[tauri::command]
-fn create_vault(password: String, state: State<VaultState>, app: tauri::AppHandle) -> Result<(), String> {
+fn create_vault(password: String, state: State<VaultState>) -> Result<(), String> {
     vault::create_vault(&password)?;
+    // Immediately unlock after creation
     let (key, data) = vault::unlock_vault(&password)?;
     let mut s = state.lock().unwrap();
     s.key = Some(key);
     s.data = Some(data);
-    let _ = app.emit("vault:unlocked", ());
     Ok(())
 }
 
 #[tauri::command]
-fn unlock(password: String, state: State<VaultState>, app: tauri::AppHandle) -> Result<(), String> {
+fn unlock(password: String, state: State<VaultState>) -> Result<(), String> {
     let (key, data) = vault::unlock_vault(&password)?;
     let mut s = state.lock().unwrap();
     s.key = Some(key);
     s.data = Some(data);
-    let _ = app.emit("vault:unlocked", ());
     Ok(())
 }
 
 #[tauri::command]
-fn lock(state: State<VaultState>, app: tauri::AppHandle) {
+fn lock(state: State<VaultState>) {
     let mut s = state.lock().unwrap();
     if let Some(mut key) = s.key.take() {
         crypto::wipe_key(&mut key);
     }
     s.data = None;
-    let _ = app.emit("vault:locked", ());
 }
 
 #[tauri::command]
@@ -185,7 +183,7 @@ fn main() {
                             }
                             s.data = None;
                         }
-                        let _ = app.emit("vault:locked", ());
+                        // Show main window at the lock screen
                         if let Some(w) = app.get_webview_window("main") {
                             let _ = w.show();
                             let _ = w.set_focus();
