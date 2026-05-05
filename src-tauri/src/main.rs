@@ -5,7 +5,12 @@ mod crypto;
 mod vault;
 
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Manager, State,
+};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 use vault::{Entry, VaultData};
 
 /// The session state held in memory while the vault is unlocked.
@@ -17,7 +22,10 @@ struct AppState {
 
 impl AppState {
     fn locked() -> Self {
-        Self { key: None, data: None }
+        Self {
+            key: None,
+            data: None,
+        }
     }
 }
 
@@ -116,6 +124,7 @@ fn delete_entry(id: String, state: State<VaultState>) -> Result<(), String> {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(Mutex::new(AppState::locked()))
         .invoke_handler(tauri::generate_handler![
             vault_exists,
@@ -128,6 +137,92 @@ fn main() {
             update_entry,
             delete_entry,
         ])
+        .setup(|app| {
+            // ── Global hotkey ──────────────────────────────────────────────
+            let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyP);
+
+            let app_handle = app.handle().clone();
+            app.global_shortcut()
+                .on_shortcut(shortcut, move |_app, _shortcut, event| {
+                    // Only act on key press, not key release — prevents the toggle
+                    // firing twice on Windows (once down, once up)
+                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        let overlay = app_handle.get_webview_window("overlay").unwrap();
+                        if overlay.is_visible().unwrap_or(false) {
+                            let _ = overlay.hide();
+                        } else {
+                            let _ = overlay.show();
+                            let _ = overlay.set_focus();
+                        }
+                    }
+                })?;
+
+            // ── System tray ────────────────────────────────────────────────
+            let open_item = MenuItem::with_id(app, "open", "Open Vault", true, None::<&str>)?;
+            let lock_item = MenuItem::with_id(app, "lock", "Lock", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open_item, &lock_item, &quit_item])?;
+
+            TrayIconBuilder::new()
+                .menu(&menu)
+                .tooltip("Vault")
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "open" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "lock" => {
+                        if let Some(state) = app.try_state::<VaultState>() {
+                            let mut s = state.lock().unwrap();
+                            if let Some(mut key) = s.key.take() {
+                                crypto::wipe_key(&mut key);
+                            }
+                            s.data = None;
+                        }
+                        // Show main window at the lock screen
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    // Double-click the tray icon to open the main window
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Hide the main window instead of quitting when closed
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    window.hide().unwrap();
+                    api.prevent_close();
+                }
+                // Hide overlay on close too
+                if window.label() == "overlay" {
+                    window.hide().unwrap();
+                    api.prevent_close();
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

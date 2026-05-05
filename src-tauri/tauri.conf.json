@@ -11,12 +11,29 @@
   },
   "app": {
     "windows": [
-      {
-        "title": "vault",
-        "width": 800,
-        "height": 600
-      }
-    ],
+  {
+    "label": "main",
+    "title": "Vault",
+    "width": 900,
+    "height": 600,
+    "minWidth": 700,
+    "minHeight": 400,
+    "center": true
+  },
+  {
+    "label": "overlay",
+    "title": "Vault — Quick Access",
+    "width": 480,
+    "height": 400,
+    "decorations": false,
+    "alwaysOnTop": true,
+    "visible": false,
+    "center": true,
+    "skipTaskbar": true,
+    "resizable": false,
+    "shadow": true
+  }
+],
     "security": {
       "csp": null
     }
