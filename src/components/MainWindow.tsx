@@ -5,11 +5,22 @@ import EntryList from "./EntryList";
 import EntryDetail from "./EntryDetail";
 import AddEntryModal from "./AddEntryModal";
 
+const TIMEOUT_OPTIONS = [
+  { label: "1 min",  ms: 1 * 60 * 1000 },
+  { label: "5 min",  ms: 5 * 60 * 1000 },
+  { label: "15 min", ms: 15 * 60 * 1000 },
+  { label: "30 min", ms: 30 * 60 * 1000 },
+  { label: "1 hour", ms: 60 * 60 * 1000 },
+  { label: "Never",  ms: 0 },
+];
+
 interface Props {
   onLocked: () => void;
+  timeoutMs: number;
+  onTimeoutChange: (ms: number) => void;
 }
 
-export default function MainWindow({ onLocked }: Props) {
+export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange }: Props) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [selected, setSelected] = useState<Entry | null>(null);
   const [search, setSearch] = useState("");
@@ -50,7 +61,20 @@ export default function MainWindow({ onLocked }: Props) {
         flexShrink: 0,
       }}>
         <span style={{ fontWeight: 600, fontSize: "15px" }}>Vault</span>
-        <div style={{ display: "flex", gap: "8px" }}>
+        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          <select
+            value={timeoutMs}
+            onChange={(e) => onTimeoutChange(Number(e.target.value))}
+            style={{
+              background: "var(--bg)", color: "var(--muted)", border: "1px solid var(--border)",
+              borderRadius: "var(--radius)", padding: "5px 8px", fontSize: "12px", cursor: "pointer",
+            }}
+            title="Auto-lock after"
+          >
+            {TIMEOUT_OPTIONS.map((o) => (
+              <option key={o.ms} value={o.ms}>{o.label === "Never" ? "No auto-lock" : `Lock after ${o.label}`}</option>
+            ))}
+          </select>
           <button className="btn-primary" style={{ padding: "6px 14px", fontSize: "13px" }} onClick={() => setShowAdd(true)}>
             + Add entry
           </button>
