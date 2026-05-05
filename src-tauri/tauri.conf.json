@@ -22,6 +22,7 @@
   },
   {
     "label": "overlay",
+    "url": "overlay.html",
     "title": "Vault — Quick Access",
     "width": 480,
     "height": 400,

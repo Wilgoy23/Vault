@@ -1,12 +1,11 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App";
 import Overlay from "./Overlay";
 import "./app.css";
 
-// Tauri sets the window label in the URL — use it to decide which UI to render
-const isOverlay = window.location.pathname.includes("overlay") ||
-  new URLSearchParams(window.location.search).get("window") === "overlay";
+const isOverlay = getCurrentWindow().label === "overlay";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

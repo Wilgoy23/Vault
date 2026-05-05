@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { vaultExists, isUnlocked, lock } from "./api";
 import LockScreen from "./components/LockScreen";
 import MainWindow from "./components/MainWindow";
@@ -30,6 +31,12 @@ export default function App() {
     await lock();
     setScreen("lock");
   };
+
+  // Transition to lock screen when any window triggers a lock
+  useEffect(() => {
+    const unlisten = listen("vault:locked", () => setScreen("lock"));
+    return () => { unlisten.then((f) => f()); };
+  }, []);
 
   const handleTimeoutChange = (ms: number) => {
     setTimeoutMs(ms);
