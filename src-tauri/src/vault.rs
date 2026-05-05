@@ -11,6 +11,8 @@ use crate::crypto;
 pub struct Entry {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
     pub email: String,
     pub password: String,
     pub url: Option<String>,
@@ -129,6 +131,7 @@ pub fn add_entry(
     key: &[u8; 32],
     data: &mut VaultData,
     name: String,
+    username: Option<String>,
     email: String,
     password: String,
     url: Option<String>,
@@ -138,6 +141,7 @@ pub fn add_entry(
     let entry = Entry {
         id: Uuid::new_v4().to_string(),
         name,
+        username,
         email,
         password,
         url,
@@ -156,6 +160,7 @@ pub fn update_entry(
     data: &mut VaultData,
     id: &str,
     name: String,
+    username: Option<String>,
     email: String,
     password: String,
     url: Option<String>,
@@ -168,6 +173,7 @@ pub fn update_entry(
         .ok_or("Entry not found")?;
 
     entry.name = name;
+    entry.username = username;
     entry.email = email;
     entry.password = password;
     entry.url = url;
@@ -274,6 +280,7 @@ mod tests {
         let entry = Entry {
             id: uuid::Uuid::new_v4().to_string(),
             name: "GitHub".into(),
+            username: None,
             email: "user@example.com".into(),
             password: "hunter2".into(),
             url: Some("github.com".into()),
@@ -300,6 +307,7 @@ mod tests {
         data.entries.push(Entry {
             id: id.clone(),
             name: "To Delete".into(),
+            username: None,
             email: "a@b.com".into(),
             password: "pass".into(),
             url: None,
@@ -326,6 +334,7 @@ mod tests {
         data.entries.push(Entry {
             id: id.clone(),
             name: "Old Name".into(),
+            username: None,
             email: "old@example.com".into(),
             password: "oldpass".into(),
             url: None,
@@ -357,6 +366,7 @@ mod tests {
             data.entries.push(Entry {
                 id: uuid::Uuid::new_v4().to_string(),
                 name: format!("Service {i}"),
+                username: None,
                 email: format!("user{i}@example.com"),
                 password: format!("pass{i}"),
                 url: None,

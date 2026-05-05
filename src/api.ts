@@ -21,6 +21,7 @@ export const listEntries = () =>
 
 export const addEntry = (payload: {
   name: string;
+  username?: string;
   email: string;
   password: string;
   url?: string;
@@ -30,6 +31,7 @@ export const addEntry = (payload: {
 export const updateEntry = (payload: {
   id: string;
   name: string;
+  username?: string;
   email: string;
   password: string;
   url?: string;

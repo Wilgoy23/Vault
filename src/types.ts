@@ -1,6 +1,7 @@
 export interface Entry {
   id: string;
   name: string;
+  username?: string;
   email: string;
   password: string;
   url?: string;

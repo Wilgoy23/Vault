@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { addEntry } from "../api";
 import { Entry } from "../types";
+import PasswordInput from "./PasswordInput";
 
 interface Props {
   onAdded: (entry: Entry) => void;
@@ -8,7 +9,7 @@ interface Props {
 }
 
 export default function AddEntryModal({ onAdded, onClose }: Props) {
-  const [form, setForm] = useState({ name: "", email: "", password: "", url: "", notes: "" });
+  const [form, setForm] = useState({ name: "", username: "", email: "", password: "", url: "", notes: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -26,6 +27,7 @@ export default function AddEntryModal({ onAdded, onClose }: Props) {
     try {
       const entry = await addEntry({
         name: form.name,
+        username: form.username || undefined,
         email: form.email,
         password: form.password,
         url: form.url || undefined,
@@ -51,8 +53,9 @@ export default function AddEntryModal({ onAdded, onClose }: Props) {
         <h2 style={{ fontSize: "17px", fontWeight: 600, marginBottom: "20px" }}>Add entry</h2>
         <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
           <input placeholder="Name  (e.g. GitHub)" value={form.name} onChange={set("name")} autoFocus />
+          <input placeholder="Username (optional)" value={form.username} onChange={set("username")} />
           <input placeholder="Email" type="email" value={form.email} onChange={set("email")} />
-          <input placeholder="Password" value={form.password} onChange={set("password")} />
+          <PasswordInput value={form.password} onChange={(v) => setForm({ ...form, password: v })} />
           <input placeholder="URL (optional)" value={form.url} onChange={set("url")} />
           <textarea
             placeholder="Notes (optional)"

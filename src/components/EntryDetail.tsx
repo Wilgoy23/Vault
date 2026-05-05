@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Entry } from "../types";
 import { updateEntry, deleteEntry } from "../api";
+import PasswordInput from "./PasswordInput";
 
 interface Props {
   entry: Entry;
@@ -11,13 +12,13 @@ interface Props {
 export default function EntryDetail({ entry, onUpdated, onDeleted }: Props) {
   const [editing, setEditing] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
-  const [copied, setCopied] = useState<"password" | "email" | null>(null);
+  const [copied, setCopied] = useState<"password" | "email" | "username" | null>(null);
   const [form, setForm] = useState({ ...entry });
   const [error, setError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const copy = async (type: "password" | "email") => {
-    const value = type === "password" ? entry.password : entry.email;
+  const copy = async (type: "password" | "email" | "username") => {
+    const value = type === "password" ? entry.password : type === "email" ? entry.email : (entry.username ?? "");
     await navigator.clipboard.writeText(value);
     setCopied(type);
     setTimeout(() => setCopied(null), 2000);
@@ -35,6 +36,7 @@ export default function EntryDetail({ entry, onUpdated, onDeleted }: Props) {
       await updateEntry({
         id: entry.id,
         name: form.name,
+        username: form.username || undefined,
         email: form.email,
         password: form.password,
         url: form.url || undefined,
@@ -94,12 +96,13 @@ export default function EntryDetail({ entry, onUpdated, onDeleted }: Props) {
       </div>
 
       {field("Name", "name")}
+      {field("Username", "username")}
       {field("Email", "email")}
 
       <div style={{ marginBottom: "16px" }}>
         <div style={{ color: "var(--muted)", fontSize: "12px", marginBottom: "4px" }}>Password</div>
         {editing
-          ? <input type="text" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+          ? <PasswordInput value={form.password} onChange={(v) => setForm({ ...form, password: v })} />
           : <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <span style={{ fontFamily: "monospace" }}>
                 {showPassword ? entry.password : "•".repeat(Math.min(entry.password.length, 20))}
@@ -119,6 +122,11 @@ export default function EntryDetail({ entry, onUpdated, onDeleted }: Props) {
 
       {!editing && (
         <div style={{ marginTop: "24px", paddingTop: "20px", borderTop: "1px solid var(--border)", display: "flex", gap: "8px" }}>
+          {entry.username && (
+            <button className="btn-ghost" onClick={() => copy("username")}>
+              {copied === "username" ? "Username copied!" : "Copy username"}
+            </button>
+          )}
           <button className="btn-ghost" onClick={() => copy("email")}>
             {copied === "email" ? "Email copied!" : "Copy email"}
           </button>

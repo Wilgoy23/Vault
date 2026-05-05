@@ -84,6 +84,7 @@ fn list_entries(state: State<VaultState>) -> Result<Vec<Entry>, String> {
 #[tauri::command]
 fn add_entry(
     name: String,
+    username: Option<String>,
     email: String,
     password: String,
     url: Option<String>,
@@ -93,13 +94,14 @@ fn add_entry(
     let mut s = state.lock().unwrap();
     let key = s.key.ok_or("Vault is locked")?;
     let data = s.data.as_mut().ok_or("Vault is locked")?;
-    vault::add_entry(&key, data, name, email, password, url, notes)
+    vault::add_entry(&key, data, name, username, email, password, url, notes)
 }
 
 #[tauri::command]
 fn update_entry(
     id: String,
     name: String,
+    username: Option<String>,
     email: String,
     password: String,
     url: Option<String>,
@@ -109,7 +111,7 @@ fn update_entry(
     let mut s = state.lock().unwrap();
     let key = s.key.ok_or("Vault is locked")?;
     let data = s.data.as_mut().ok_or("Vault is locked")?;
-    vault::update_entry(&key, data, &id, name, email, password, url, notes)
+    vault::update_entry(&key, data, &id, name, username, email, password, url, notes)
 }
 
 #[tauri::command]
