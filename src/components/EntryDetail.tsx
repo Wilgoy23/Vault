@@ -1,0 +1,134 @@
+import { useState } from "react";
+import { Entry } from "../types";
+import { updateEntry, deleteEntry } from "../api";
+
+interface Props {
+  entry: Entry;
+  onUpdated: (entry: Entry) => void;
+  onDeleted: (id: string) => void;
+}
+
+export default function EntryDetail({ entry, onUpdated, onDeleted }: Props) {
+  const [editing, setEditing] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [copied, setCopied] = useState<"password" | "email" | null>(null);
+  const [form, setForm] = useState({ ...entry });
+  const [error, setError] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const copy = async (type: "password" | "email") => {
+    const value = type === "password" ? entry.password : entry.email;
+    await navigator.clipboard.writeText(value);
+    setCopied(type);
+    setTimeout(() => setCopied(null), 2000);
+    // Clear clipboard after 30 seconds
+    setTimeout(() => navigator.clipboard.writeText(""), 30000);
+  };
+
+  const handleSave = async () => {
+    setError("");
+    if (!form.name.trim() || !form.email.trim() || !form.password.trim()) {
+      setError("Name, email and password are required.");
+      return;
+    }
+    try {
+      await updateEntry({
+        id: entry.id,
+        name: form.name,
+        email: form.email,
+        password: form.password,
+        url: form.url || undefined,
+        notes: form.notes || undefined,
+      });
+      onUpdated({ ...form, updated_at: Date.now() / 1000 });
+      setEditing(false);
+    } catch (err: any) {
+      setError(err?.toString() ?? "Failed to save.");
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!confirmDelete) { setConfirmDelete(true); return; }
+    try {
+      await deleteEntry(entry.id);
+      onDeleted(entry.id);
+    } catch (err: any) {
+      setError(err?.toString() ?? "Failed to delete.");
+    }
+  };
+
+  const field = (label: string, key: keyof typeof form, type = "text") => (
+    <div style={{ marginBottom: "16px" }}>
+      <div style={{ color: "var(--muted)", fontSize: "12px", marginBottom: "4px" }}>{label}</div>
+      {editing
+        ? <input type={type} value={(form[key] as string) ?? ""} onChange={(e) => setForm({ ...form, [key]: e.target.value })} />
+        : <div style={{ fontFamily: key === "password" ? "monospace" : "inherit", fontSize: "14px" }}>
+            {key === "password"
+              ? showPassword ? entry.password : "•".repeat(Math.min(entry.password.length, 20))
+              : (entry[key] as string) || <span style={{ color: "var(--muted)" }}>—</span>}
+          </div>
+      }
+    </div>
+  );
+
+  return (
+    <div style={{ flex: 1, padding: "28px", overflowY: "auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px" }}>
+        <h2 style={{ fontSize: "18px", fontWeight: 600 }}>{entry.name}</h2>
+        <div style={{ display: "flex", gap: "8px" }}>
+          {!editing && (
+            <button className="btn-ghost" onClick={() => { setEditing(true); setConfirmDelete(false); setForm({ ...entry }); }}>
+              Edit
+            </button>
+          )}
+          {editing && (
+            <>
+              <button className="btn-ghost" onClick={() => { setEditing(false); setError(""); }}>Cancel</button>
+              <button className="btn-primary" onClick={handleSave}>Save</button>
+            </>
+          )}
+          <button className="btn-danger" onClick={handleDelete}>
+            {confirmDelete ? "Confirm delete" : "Delete"}
+          </button>
+        </div>
+      </div>
+
+      {field("Name", "name")}
+      {field("Email", "email")}
+
+      <div style={{ marginBottom: "16px" }}>
+        <div style={{ color: "var(--muted)", fontSize: "12px", marginBottom: "4px" }}>Password</div>
+        {editing
+          ? <input type="text" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+          : <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ fontFamily: "monospace" }}>
+                {showPassword ? entry.password : "•".repeat(Math.min(entry.password.length, 20))}
+              </span>
+              <button className="btn-ghost" style={{ padding: "4px 10px", fontSize: "12px" }} onClick={() => setShowPassword(!showPassword)}>
+                {showPassword ? "Hide" : "Show"}
+              </button>
+              <button className="btn-ghost" style={{ padding: "4px 10px", fontSize: "12px" }} onClick={() => copy("password")}>
+                {copied === "password" ? "Copied!" : "Copy"}
+              </button>
+            </div>
+        }
+      </div>
+
+      {field("URL", "url")}
+      {field("Notes", "notes")}
+
+      {!editing && (
+        <div style={{ marginTop: "24px", paddingTop: "20px", borderTop: "1px solid var(--border)", display: "flex", gap: "8px" }}>
+          <button className="btn-ghost" onClick={() => copy("email")}>
+            {copied === "email" ? "Email copied!" : "Copy email"}
+          </button>
+          <button className="btn-ghost" onClick={() => copy("password")}>
+            {copied === "password" ? "Password copied!" : "Copy password"}
+          </button>
+        </div>
+      )}
+
+      {error && <p className="error" style={{ marginTop: "12px" }}>{error}</p>}
+    </div>
+  );
+}
