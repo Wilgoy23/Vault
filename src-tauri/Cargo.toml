@@ -32,6 +32,7 @@ zeroize = { version = "1", features = ["derive"] }
 # Utilities
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
+dirs = "5"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-autostart = "2"
