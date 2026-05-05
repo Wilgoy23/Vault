@@ -54,10 +54,10 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange }: Pro
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
       {/* Titlebar */}
-      <div style={{
+      <div className="glass" style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
         padding: "0 16px", height: "48px",
-        borderBottom: "1px solid var(--border)", background: "var(--bg2)",
+        borderLeft: "none", borderRight: "none", borderTop: "none",
         flexShrink: 0,
       }}>
         <span style={{ fontWeight: 600, fontSize: "15px" }}>Vault</span>
@@ -66,7 +66,8 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange }: Pro
             value={timeoutMs}
             onChange={(e) => onTimeoutChange(Number(e.target.value))}
             style={{
-              background: "var(--bg)", color: "var(--muted)", border: "1px solid var(--border)",
+              background: "rgba(255,255,255,0.06)", color: "var(--muted)",
+              border: "1px solid var(--border)",
               borderRadius: "var(--radius)", padding: "5px 8px", fontSize: "12px", cursor: "pointer",
             }}
             title="Auto-lock after"

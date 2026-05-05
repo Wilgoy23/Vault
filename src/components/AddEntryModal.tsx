@@ -43,12 +43,13 @@ export default function AddEntryModal({ onAdded, onClose }: Props) {
 
   return (
     <div style={{
-      position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)",
+      position: "fixed", inset: 0, background: "rgba(3,8,20,0.65)",
+      backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)",
       display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100,
     }}>
-      <div style={{
-        background: "var(--bg2)", border: "1px solid var(--border)",
+      <div className="glass" style={{
         borderRadius: "var(--radius-lg)", padding: "32px", width: "400px",
+        boxShadow: "0 8px 48px rgba(0,0,0,0.5), 0 0 60px rgba(30,80,200,0.10)",
       }}>
         <h2 style={{ fontSize: "17px", fontWeight: 600, marginBottom: "20px" }}>Add entry</h2>
         <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>

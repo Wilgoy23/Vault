@@ -1,31 +1,58 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg: #0f0f10;
-  --bg2: #1a1a1d;
-  --bg3: #242428;
-  --border: rgba(255,255,255,0.08);
-  --text: #e8e8ea;
-  --muted: #888890;
-  --accent: #7c6af7;
-  --accent-hover: #6b59e8;
-  --danger: #e05555;
-  --success: #4caf82;
-  --radius: 8px;
-  --radius-lg: 12px;
+  --bg:            #050D1A;
+  --bg2:           rgba(255,255,255,0.06);
+  --bg3:           rgba(255,255,255,0.10);
+  --border:        rgba(255,255,255,0.10);
+  --text:          #E2EAF4;
+  --muted:         #6B90B8;
+  --accent:        #4D9DE0;
+  --accent-hover:  #69B0E8;
+  --accent-glow:   rgba(77,157,224,0.30);
+  --danger:        #F87171;
+  --danger-glow:   rgba(248,113,113,0.15);
+  --success:       #34D399;
+  --radius:        8px;
+  --radius-lg:     14px;
+
+  /* glass recipe */
+  --glass-bg:      rgba(255,255,255,0.06);
+  --glass-border:  rgba(255,255,255,0.10);
+  --glass-blur:    blur(18px) saturate(200%);
 }
 
+html, body { height: 100%; }
+
 body {
-  background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+
+  /* layered deep-navy background with coloured glows */
+  background:
+    radial-gradient(ellipse 70% 60% at 15% 15%, rgba(30,80,200,0.35) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 50% at 85% 85%, rgba(15,50,140,0.30) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 40% at 65% 5%,  rgba(60,110,220,0.18) 0%, transparent 50%),
+    linear-gradient(145deg, #050D1A 0%, #081526 55%, #0B1E3D 100%);
+  background-attachment: fixed;
 }
 
+/* ── Glass surface helper ─────────────────────────────────────────────────── */
+
+.glass {
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+}
+
+/* ── Inputs & textareas ───────────────────────────────────────────────────── */
+
 input, textarea {
-  background: var(--bg3);
+  background: rgba(255,255,255,0.05);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--text);
@@ -34,12 +61,17 @@ input, textarea {
   padding: 8px 12px;
   width: 100%;
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color 0.18s, box-shadow 0.18s;
 }
+
+input::placeholder, textarea::placeholder { color: var(--muted); }
 
 input:focus, textarea:focus {
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
+
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
 
 button {
   border: none;
@@ -49,29 +81,39 @@ button {
   font-size: 14px;
   font-weight: 500;
   padding: 8px 16px;
-  transition: background 0.15s, opacity 0.15s;
+  transition: background 0.18s, box-shadow 0.18s, opacity 0.18s, border-color 0.18s;
 }
 
-button:active { opacity: 0.85; }
+button:active { opacity: 0.82; }
 
 .btn-primary {
   background: var(--accent);
   color: #fff;
+  box-shadow: 0 0 18px var(--accent-glow);
 }
-.btn-primary:hover { background: var(--accent-hover); }
+.btn-primary:hover {
+  background: var(--accent-hover);
+  box-shadow: 0 0 26px var(--accent-glow);
+}
 
 .btn-ghost {
-  background: transparent;
+  background: rgba(255,255,255,0.05);
   border: 1px solid var(--border);
   color: var(--muted);
 }
-.btn-ghost:hover { background: var(--bg3); color: var(--text); }
+.btn-ghost:hover {
+  background: rgba(255,255,255,0.10);
+  color: var(--text);
+  border-color: rgba(255,255,255,0.18);
+}
 
 .btn-danger {
   background: transparent;
   border: 1px solid transparent;
   color: var(--danger);
 }
-.btn-danger:hover { background: rgba(224,85,85,0.1); }
+.btn-danger:hover { background: var(--danger-glow); }
+
+/* ── Misc ─────────────────────────────────────────────────────────────────── */
 
 .error { color: var(--danger); font-size: 13px; margin-top: 8px; }

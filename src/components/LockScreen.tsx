@@ -50,11 +50,11 @@ export default function LockScreen({ onUnlocked }: Props) {
   return (
     <div style={{
       display: "flex", alignItems: "center", justifyContent: "center",
-      height: "100vh", background: "var(--bg)",
+      height: "100vh",
     }}>
-      <div style={{
-        background: "var(--bg2)", border: "1px solid var(--border)",
+      <div className="glass" style={{
         borderRadius: "var(--radius-lg)", padding: "40px", width: "360px",
+        boxShadow: "0 8px 48px rgba(0,0,0,0.5), 0 0 80px rgba(30,80,200,0.12)",
       }}>
         <div style={{ marginBottom: "28px" }}>
           <h1 style={{ fontSize: "20px", fontWeight: 600, marginBottom: "6px" }}>

@@ -15,8 +15,9 @@ export default function EntryList({ entries, selectedId, onSelect, search, onSea
   );
 
   return (
-    <div style={{
-      width: "240px", flexShrink: 0, borderRight: "1px solid var(--border)",
+    <div className="glass" style={{
+      width: "240px", flexShrink: 0,
+      borderTop: "none", borderBottom: "none", borderLeft: "none",
       display: "flex", flexDirection: "column", height: "100%",
     }}>
       <div style={{ padding: "12px", borderBottom: "1px solid var(--border)" }}>
@@ -39,7 +40,7 @@ export default function EntryList({ entries, selectedId, onSelect, search, onSea
             style={{
               padding: "12px 16px", cursor: "pointer",
               borderBottom: "1px solid var(--border)",
-              background: selectedId === entry.id ? "var(--bg3)" : "transparent",
+              background: selectedId === entry.id ? "rgba(77,157,224,0.12)" : "transparent",
               borderLeft: selectedId === entry.id ? "2px solid var(--accent)" : "2px solid transparent",
               transition: "background 0.1s",
             }}

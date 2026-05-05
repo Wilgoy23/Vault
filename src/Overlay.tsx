@@ -74,9 +74,14 @@ export default function Overlay() {
     <div
       style={{
         display: "flex", flexDirection: "column",
-        height: "100vh", background: "var(--bg2)",
-        border: "1px solid var(--border)", borderRadius: "var(--radius-lg)",
+        height: "100vh",
+        background: "rgba(6,14,32,0.80)",
+        backdropFilter: "blur(24px) saturate(200%)",
+        WebkitBackdropFilter: "blur(24px) saturate(200%)",
+        border: "1px solid rgba(255,255,255,0.10)",
+        borderRadius: "var(--radius-lg)",
         overflow: "hidden",
+        boxShadow: "0 16px 64px rgba(0,0,0,0.7), 0 0 80px rgba(30,80,200,0.15)",
       }}
       onKeyDown={handleKeyDown}
     >
@@ -118,7 +123,7 @@ export default function Overlay() {
               style={{
                 padding: "11px 16px", cursor: "pointer",
                 borderBottom: "1px solid var(--border)",
-                background: i === selectedIndex ? "var(--bg3)" : "transparent",
+                background: i === selectedIndex ? "rgba(77,157,224,0.12)" : "transparent",
                 borderLeft: i === selectedIndex ? "2px solid var(--accent)" : "2px solid transparent",
                 transition: "background 0.1s",
               }}

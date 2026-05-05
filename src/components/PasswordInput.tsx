@@ -86,20 +86,22 @@ export default function PasswordInput({ value, onChange }: Props) {
             top: "calc(100% + 6px)",
             right: 0,
             zIndex: 200,
-            background: "var(--bg2)",
-            border: "1px solid var(--border)",
+            background: "rgba(8,18,40,0.82)",
+            backdropFilter: "blur(20px) saturate(200%)",
+            WebkitBackdropFilter: "blur(20px) saturate(200%)",
+            border: "1px solid rgba(255,255,255,0.12)",
             borderRadius: "var(--radius-lg)",
             padding: "16px",
             width: "300px",
-            boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+            boxShadow: "0 12px 40px rgba(0,0,0,0.6), 0 0 40px rgba(30,80,200,0.10)",
           }}
         >
           {/* Preview */}
           <div style={{
             fontFamily: "monospace",
             fontSize: "13px",
-            background: "var(--bg)",
-            border: "1px solid var(--border)",
+            background: "rgba(255,255,255,0.05)",
+            border: "1px solid rgba(255,255,255,0.10)",
             borderRadius: "var(--radius)",
             padding: "8px 10px",
             marginBottom: "12px",
