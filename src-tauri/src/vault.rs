@@ -186,3 +186,191 @@ pub fn delete_entry(key: &[u8; 32], data: &mut VaultData, id: &str) -> Result<()
     }
     save_vault(key, data)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    /// Points the vault at a temp directory for the duration of a test.
+    /// Each test gets its own subdirectory to avoid interference.
+    fn setup_temp_vault(test_name: &str) -> PathBuf {
+        let dir = env::temp_dir().join("vault_tests").join(test_name);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Overrides vault_path() by writing the vault file to a known temp path.
+    /// We do this by calling the internal helpers directly rather than
+    /// the public API, so we can control the path.
+    fn temp_vault_path(dir: &PathBuf) -> PathBuf {
+        dir.join("vault.enc")
+    }
+
+    fn create_vault_at(dir: &PathBuf, password: &str) {
+        let salt = crypto::generate_salt();
+        let mut key = crypto::derive_key(password, &salt).unwrap();
+        let data = VaultData::default();
+        let json = serde_json::to_vec(&data).unwrap();
+        let ciphertext = crypto::encrypt(&json, &key).unwrap();
+        crypto::wipe_key(&mut key);
+        let file = VaultFile {
+            salt: base64::engine::general_purpose::STANDARD.encode(salt),
+            ciphertext,
+        };
+        let out = serde_json::to_string(&file).unwrap();
+        fs::write(temp_vault_path(dir), out).unwrap();
+    }
+
+    fn unlock_vault_at(dir: &PathBuf, password: &str) -> ([u8; 32], VaultData) {
+        let raw = fs::read_to_string(temp_vault_path(dir)).unwrap();
+        let file: VaultFile = serde_json::from_str(&raw).unwrap();
+        let salt_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&file.salt)
+            .unwrap();
+        let key = crypto::derive_key(password, &salt_bytes).unwrap();
+        let plaintext = crypto::decrypt(&file.ciphertext, &key).unwrap();
+        let data: VaultData = serde_json::from_slice(&plaintext).unwrap();
+        (key, data)
+    }
+
+    fn save_vault_at(dir: &PathBuf, key: &[u8; 32], data: &VaultData) {
+        let raw = fs::read_to_string(temp_vault_path(dir)).unwrap();
+        let file: VaultFile = serde_json::from_str(&raw).unwrap();
+        let json = serde_json::to_vec(data).unwrap();
+        let ciphertext = crypto::encrypt(&json, key).unwrap();
+        let updated = VaultFile { salt: file.salt, ciphertext };
+        fs::write(temp_vault_path(dir), serde_json::to_string(&updated).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn create_and_unlock_vault() {
+        let dir = setup_temp_vault("create_and_unlock");
+        create_vault_at(&dir, "my-master-password");
+        let (_key, data) = unlock_vault_at(&dir, "my-master-password");
+        assert!(data.entries.is_empty());
+    }
+
+    #[test]
+    fn unlock_fails_with_wrong_password() {
+        let dir = setup_temp_vault("wrong_password");
+        create_vault_at(&dir, "correct-password");
+        let raw = fs::read_to_string(temp_vault_path(&dir)).unwrap();
+        let file: VaultFile = serde_json::from_str(&raw).unwrap();
+        let salt_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&file.salt)
+            .unwrap();
+        let key = crypto::derive_key("wrong-password", &salt_bytes).unwrap();
+        let result = crypto::decrypt(&file.ciphertext, &key);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn add_entry_persists() {
+        let dir = setup_temp_vault("add_entry");
+        create_vault_at(&dir, "password");
+        let (key, mut data) = unlock_vault_at(&dir, "password");
+
+        let entry = Entry {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "GitHub".into(),
+            email: "user@example.com".into(),
+            password: "hunter2".into(),
+            url: Some("github.com".into()),
+            notes: None,
+            created_at: now_secs(),
+            updated_at: now_secs(),
+        };
+        data.entries.push(entry.clone());
+        save_vault_at(&dir, &key, &data);
+
+        let (_key2, data2) = unlock_vault_at(&dir, "password");
+        assert_eq!(data2.entries.len(), 1);
+        assert_eq!(data2.entries[0].name, "GitHub");
+        assert_eq!(data2.entries[0].email, "user@example.com");
+    }
+
+    #[test]
+    fn delete_entry_persists() {
+        let dir = setup_temp_vault("delete_entry");
+        create_vault_at(&dir, "password");
+        let (key, mut data) = unlock_vault_at(&dir, "password");
+
+        let id = uuid::Uuid::new_v4().to_string();
+        data.entries.push(Entry {
+            id: id.clone(),
+            name: "To Delete".into(),
+            email: "a@b.com".into(),
+            password: "pass".into(),
+            url: None,
+            notes: None,
+            created_at: now_secs(),
+            updated_at: now_secs(),
+        });
+        save_vault_at(&dir, &key, &data);
+
+        data.entries.retain(|e| e.id != id);
+        save_vault_at(&dir, &key, &data);
+
+        let (_key2, data2) = unlock_vault_at(&dir, "password");
+        assert!(data2.entries.is_empty());
+    }
+
+    #[test]
+    fn update_entry_persists() {
+        let dir = setup_temp_vault("update_entry");
+        create_vault_at(&dir, "password");
+        let (key, mut data) = unlock_vault_at(&dir, "password");
+
+        let id = uuid::Uuid::new_v4().to_string();
+        data.entries.push(Entry {
+            id: id.clone(),
+            name: "Old Name".into(),
+            email: "old@example.com".into(),
+            password: "oldpass".into(),
+            url: None,
+            notes: None,
+            created_at: now_secs(),
+            updated_at: now_secs(),
+        });
+        save_vault_at(&dir, &key, &data);
+
+        if let Some(e) = data.entries.iter_mut().find(|e| e.id == id) {
+            e.name = "New Name".into();
+            e.email = "new@example.com".into();
+            e.password = "newpass".into();
+        }
+        save_vault_at(&dir, &key, &data);
+
+        let (_key2, data2) = unlock_vault_at(&dir, "password");
+        assert_eq!(data2.entries[0].name, "New Name");
+        assert_eq!(data2.entries[0].email, "new@example.com");
+    }
+
+    #[test]
+    fn multiple_entries_survive_roundtrip() {
+        let dir = setup_temp_vault("multiple_entries");
+        create_vault_at(&dir, "password");
+        let (key, mut data) = unlock_vault_at(&dir, "password");
+
+        for i in 0..5 {
+            data.entries.push(Entry {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: format!("Service {i}"),
+                email: format!("user{i}@example.com"),
+                password: format!("pass{i}"),
+                url: None,
+                notes: None,
+                created_at: now_secs(),
+                updated_at: now_secs(),
+            });
+        }
+        save_vault_at(&dir, &key, &data);
+
+        let (_key2, data2) = unlock_vault_at(&dir, "password");
+        assert_eq!(data2.entries.len(), 5);
+        for i in 0..5 {
+            assert_eq!(data2.entries[i].name, format!("Service {i}"));
+        }
+    }
+}
