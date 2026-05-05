@@ -40,3 +40,12 @@ export const updateEntry = (payload: {
 
 export const deleteEntry = (id: string) =>
   invoke<void>("delete_entry", { id });
+
+export const enableAutostart = () =>
+  invoke<void>("enable_autostart");
+
+export const disableAutostart = () =>
+  invoke<void>("disable_autostart");
+
+export const isAutostartEnabled = () =>
+  invoke<boolean>("is_autostart_enabled");

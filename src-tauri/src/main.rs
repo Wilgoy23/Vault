@@ -10,6 +10,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, State,
 };
+use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 use vault::{Entry, VaultData};
 
@@ -122,10 +123,31 @@ fn delete_entry(id: String, state: State<VaultState>) -> Result<(), String> {
     vault::delete_entry(&key, data, &id)
 }
 
+// ── Autostart commands ────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn enable_autostart(app: tauri::AppHandle) -> Result<(), String> {
+    app.autolaunch().enable().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn disable_autostart(app: tauri::AppHandle) -> Result<(), String> {
+    app.autolaunch().disable().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn is_autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
 // ── App entry point ───────────────────────────────────────────────────────────
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(Mutex::new(AppState::locked()))
         .invoke_handler(tauri::generate_handler![
@@ -138,6 +160,9 @@ fn main() {
             add_entry,
             update_entry,
             delete_entry,
+            enable_autostart,
+            disable_autostart,
+            is_autostart_enabled,
         ])
         .setup(|app| {
             // ── Global hotkey ──────────────────────────────────────────────

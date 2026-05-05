@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { listEntries, lock } from "../api";
+import { listEntries, lock, isAutostartEnabled, enableAutostart, disableAutostart } from "../api";
 import { Entry } from "../types";
 import EntryList from "./EntryList";
 import EntryDetail from "./EntryDetail";
@@ -25,10 +25,26 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange }: Pro
   const [selected, setSelected] = useState<Entry | null>(null);
   const [search, setSearch] = useState("");
   const [showAdd, setShowAdd] = useState(false);
+  const [autostart, setAutostart] = useState(false);
 
   useEffect(() => {
     listEntries().then(setEntries);
+    isAutostartEnabled().then(setAutostart).catch(() => {});
   }, []);
+
+  const handleAutostartToggle = async () => {
+    try {
+      if (autostart) {
+        await disableAutostart();
+        setAutostart(false);
+      } else {
+        await enableAutostart();
+        setAutostart(true);
+      }
+    } catch (e) {
+      console.error("Autostart toggle failed:", e);
+    }
+  };
 
   const handleLock = async () => {
     await lock();
@@ -78,6 +94,14 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange }: Pro
           </select>
           <button className="btn-primary" style={{ padding: "6px 14px", fontSize: "13px" }} onClick={() => setShowAdd(true)}>
             + Add entry
+          </button>
+          <button
+            className="btn-ghost"
+            style={{ padding: "6px 14px", fontSize: "13px" }}
+            onClick={handleAutostartToggle}
+            title="Launch Vault on system startup"
+          >
+            {autostart ? "Autostart: On" : "Autostart: Off"}
           </button>
           <button className="btn-ghost" style={{ padding: "6px 14px", fontSize: "13px" }} onClick={handleLock}>
             Lock
