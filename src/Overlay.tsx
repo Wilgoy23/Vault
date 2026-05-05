@@ -36,12 +36,12 @@ export default function Overlay() {
       e.email.toLowerCase().includes(search.toLowerCase())
   );
 
-  const copyAndClose = async (entry: Entry, type: "password" | "email") => {
+  const copyValue = async (entry: Entry, type: "password" | "email") => {
     const value = type === "password" ? entry.password : entry.email;
     await navigator.clipboard.writeText(value);
     setCopied(type === "password" ? "Password copied!" : "Email copied!");
     setTimeout(() => navigator.clipboard.writeText(""), 30000);
-    setTimeout(() => getCurrentWindow().hide(), 800);
+    setTimeout(() => setCopied(null), 1500);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -58,11 +58,11 @@ export default function Overlay() {
         setSelectedIndex((i) => Math.max(i - 1, 0));
         break;
       case "Enter":
-        if (filtered[selectedIndex]) copyAndClose(filtered[selectedIndex], "password");
+        if (filtered[selectedIndex]) copyValue(filtered[selectedIndex], "password");
         break;
       case "Tab":
         e.preventDefault();
-        if (filtered[selectedIndex]) copyAndClose(filtered[selectedIndex], "email");
+        if (filtered[selectedIndex]) copyValue(filtered[selectedIndex], "email");
         break;
     }
   };
@@ -114,7 +114,7 @@ export default function Overlay() {
           filtered.map((entry, i) => (
             <div
               key={entry.id}
-              onClick={() => copyAndClose(entry, "password")}
+              onClick={() => copyValue(entry, "password")}
               style={{
                 padding: "11px 16px", cursor: "pointer",
                 borderBottom: "1px solid var(--border)",
