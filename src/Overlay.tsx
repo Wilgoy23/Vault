@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isUnlocked, listEntries, unlock } from "./api";
 import { Entry } from "./types";
-import "./app.css";
+import "./App.css";
 
 export default function Overlay() {
   const [search, setSearch] = useState("");

@@ -3,7 +3,7 @@ import { vaultExists, isUnlocked, lock } from "./api";
 import LockScreen from "./components/LockScreen";
 import MainWindow from "./components/MainWindow";
 import { useAutoLock } from "./utils/useAutoLock";
-import "./app.css";
+import "./App.css";
 
 type Screen = "loading" | "lock" | "main";
 
