@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { emit } from "@tauri-apps/api/event";
 import { isUnlocked, listEntries, unlock } from "./api";
 import { Entry } from "./types";
 import "./App.css";
@@ -51,6 +52,7 @@ export default function Overlay() {
       setEntries(data);
       setLocked(false);
       setPassword("");
+      await emit("vault-unlocked");
       setTimeout(() => inputRef.current?.focus(), 0);
     } catch {
       setUnlockError("Wrong password.");
