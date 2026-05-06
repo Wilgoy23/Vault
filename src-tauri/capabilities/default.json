@@ -5,6 +5,7 @@
   "windows": ["main", "overlay"],
   "permissions": [
     "core:default",
+    "core:window:allow-hide",
     "global-shortcut:default",
     "autostart:default",
     "shell:default"
