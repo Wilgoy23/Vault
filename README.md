@@ -18,13 +18,19 @@ A local, end-to-end encrypted password manager built with Tauri 2, React, and Ru
 - **Auto-lock** — configurable inactivity timeout (1 min to 1 hour, or never)
 - **Clipboard auto-clear** — copied secrets are wiped from the clipboard after 30 seconds
 - **Autostart** — optional launch on system boot
-- **Fully local** — no cloud, no sync, no telemetry; vault file lives at `%APPDATA%\vault\vault.enc`
+- **Fully local** — no cloud, no sync, no telemetry;
 
 ---
 
 ## Screenshots
 
-> Coming soon
+### Main Window
+![Vault locked](images/Vault.png)
+![Vault unlocked](images/OpenedVault.png)
+
+### Quick-Access Overlay
+![Overlay](images/overlay.png)
+![Overlay with results](images/OpenedOverlay.png)
 
 ---
 

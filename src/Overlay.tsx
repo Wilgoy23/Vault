@@ -16,6 +16,7 @@ export default function Overlay() {
   const [unlocking, setUnlocking] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
+  const selectedItemRef = useRef<HTMLDivElement>(null);
 
   const resetAndLoad = async () => {
     setSearch("");
@@ -102,6 +103,9 @@ export default function Overlay() {
   };
 
   useEffect(() => setSelectedIndex(0), [search]);
+  useEffect(() => {
+    selectedItemRef.current?.scrollIntoView({ block: "nearest" });
+  }, [selectedIndex]);
 
   return (
     <div
@@ -185,6 +189,7 @@ export default function Overlay() {
               filtered.map((entry, i) => (
                 <div
                   key={entry.id}
+                  ref={i === selectedIndex ? selectedItemRef : null}
                   onClick={() => copyValue(entry, "password")}
                   style={{
                     padding: "11px 16px", cursor: "pointer",
