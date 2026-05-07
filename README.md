@@ -67,7 +67,7 @@ The vault file cannot be decrypted without the master password. There is no reco
 | Name | Yes |
 | Password | Yes |
 | Username | No |
-| Email | No |
+| Email | Yes |
 | URL | No |
 | Notes | No |
 
@@ -117,6 +117,17 @@ npm run tauri dev
 | `Enter` | Copy password |
 | `Tab` | Copy email |
 | `Escape` | Close overlay | (Bugged - Ctrl+Shift+P to close)
+
+---
+
+## Future Improvements
+
+User Customization
+- User to be able to choose shortcut used for overlay 
+- Color Picker
+
+IOS/Android release
+Way to transfer existing Vault between devices
 
 ---
 
