@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { save, open } from "@tauri-apps/plugin-dialog";
 import { Entry } from "./types";
 
 export const vaultExists = () =>
@@ -40,6 +41,27 @@ export const updateEntry = (payload: {
 
 export const deleteEntry = (id: string) =>
   invoke<void>("delete_entry", { id });
+
+export const exportVault = async (): Promise<boolean> => {
+  const destPath = await save({
+    filters: [{ name: "Vault Backup", extensions: ["enc"] }],
+    defaultPath: "vault-backup.enc",
+  });
+  if (!destPath) return false;
+  await invoke<void>("export_vault", { destPath });
+  return true;
+};
+
+export const importVault = async (): Promise<boolean> => {
+  const srcPath = await open({
+    filters: [{ name: "Vault Backup", extensions: ["enc"] }],
+    multiple: false,
+    directory: false,
+  });
+  if (!srcPath) return false;
+  await invoke<void>("import_vault", { srcPath });
+  return true;
+};
 
 export const enableAutostart = () =>
   invoke<void>("enable_autostart");

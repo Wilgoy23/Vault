@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { listEntries, lock, isAutostartEnabled, enableAutostart, disableAutostart } from "../api";
+import { listEntries, lock, isAutostartEnabled, enableAutostart, disableAutostart, exportVault, importVault } from "../api";
 import { Entry } from "../types";
 import EntryList from "./EntryList";
 import EntryDetail from "./EntryDetail";
@@ -49,6 +49,25 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange }: Pro
   const handleLock = async () => {
     await lock();
     onLocked();
+  };
+
+  const handleExport = async () => {
+    try {
+      await exportVault();
+    } catch (e) {
+      console.error("Export failed:", e);
+    }
+  };
+
+  const handleImport = async () => {
+    if (!window.confirm("Importing a vault will replace your current vault and lock the app. Continue?")) return;
+    try {
+      await importVault();
+      onLocked();
+    } catch (e) {
+      console.error("Import failed:", e);
+      window.alert(`Import failed: ${e}`);
+    }
   };
 
   const handleAdded = (entry: Entry) => {
@@ -102,6 +121,12 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange }: Pro
             title="Launch Vault on system startup"
           >
             {autostart ? "Autostart: On" : "Autostart: Off"}
+          </button>
+          <button className="btn-ghost" style={{ padding: "6px 14px", fontSize: "13px" }} onClick={handleExport} title="Save an encrypted backup of your vault">
+            Export
+          </button>
+          <button className="btn-ghost" style={{ padding: "6px 14px", fontSize: "13px" }} onClick={handleImport} title="Restore vault from an encrypted backup">
+            Import
           </button>
           <button className="btn-ghost" style={{ padding: "6px 14px", fontSize: "13px" }} onClick={handleLock}>
             Lock

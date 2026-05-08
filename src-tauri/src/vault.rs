@@ -193,6 +193,29 @@ pub fn delete_entry(key: &[u8; 32], data: &mut VaultData, id: &str) -> Result<()
     save_vault(key, data)
 }
 
+/// Copies the encrypted vault file to the given destination path.
+pub fn export_vault(dest_path: &str) -> Result<(), String> {
+    let src = vault_path();
+    if !src.exists() {
+        return Err("No vault to export".into());
+    }
+    fs::copy(&src, dest_path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Replaces the current vault file with one from the given source path.
+/// Validates that the source is a valid vault file before overwriting.
+pub fn import_vault(src_path: &str) -> Result<(), String> {
+    let raw = fs::read_to_string(src_path)
+        .map_err(|_| "Cannot read the selected file".to_string())?;
+    let _: VaultFile = serde_json::from_str(&raw)
+        .map_err(|_| "Selected file is not a valid vault backup".to_string())?;
+    let dest = vault_path();
+    fs::create_dir_all(dest.parent().unwrap()).map_err(|e| e.to_string())?;
+    fs::copy(src_path, &dest).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

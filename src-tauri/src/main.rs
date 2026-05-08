@@ -123,6 +123,25 @@ fn delete_entry(id: String, state: State<VaultState>) -> Result<(), String> {
     vault::delete_entry(&key, data, &id)
 }
 
+// ── Import / Export commands ──────────────────────────────────────────────────
+
+#[tauri::command]
+fn export_vault(dest_path: String) -> Result<(), String> {
+    vault::export_vault(&dest_path)
+}
+
+#[tauri::command]
+fn import_vault(src_path: String, state: State<VaultState>) -> Result<(), String> {
+    vault::import_vault(&src_path)?;
+    // Clear the in-memory session so the user must re-unlock with the new vault's password
+    let mut s = state.lock().unwrap();
+    if let Some(mut key) = s.key.take() {
+        crypto::wipe_key(&mut key);
+    }
+    s.data = None;
+    Ok(())
+}
+
 // ── Autostart commands ────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -144,6 +163,7 @@ fn is_autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -160,6 +180,8 @@ fn main() {
             add_entry,
             update_entry,
             delete_entry,
+            export_vault,
+            import_vault,
             enable_autostart,
             disable_autostart,
             is_autostart_enabled,
