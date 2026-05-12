@@ -380,6 +380,67 @@ mod tests {
     }
 
     #[test]
+    fn export_fails_when_no_vault_exists() {
+        // vault_path() won't exist in a fresh temp env — export should report it
+        let dest = env::temp_dir().join("vault_tests").join("export_no_vault_dest.enc");
+        // Only meaningful if the system vault path doesn't exist (CI / clean machine).
+        // If it does exist locally, skip gracefully.
+        let src = dirs::config_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("vault")
+            .join("vault.enc");
+        if !src.exists() {
+            let result = export_vault(dest.to_str().unwrap());
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err(), "No vault to export");
+        }
+    }
+
+    #[test]
+    fn import_rejects_invalid_json() {
+        let dir = setup_temp_vault("import_invalid_json");
+        let bad_file = dir.join("bad.enc");
+        fs::write(&bad_file, b"this is not json").unwrap();
+        let result = import_vault(bad_file.to_str().unwrap());
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Selected file is not a valid vault backup");
+    }
+
+    #[test]
+    fn import_rejects_json_missing_required_fields() {
+        let dir = setup_temp_vault("import_missing_fields");
+        let bad_file = dir.join("bad.enc");
+        fs::write(&bad_file, br#"{"foo": "bar"}"#).unwrap();
+        let result = import_vault(bad_file.to_str().unwrap());
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Selected file is not a valid vault backup");
+    }
+
+    #[test]
+    fn delete_entry_not_found_returns_error() {
+        let mut data = VaultData {
+            entries: vec![Entry {
+                id: "real-id".into(),
+                name: "Test".into(),
+                username: None,
+                email: "a@b.com".into(),
+                password: "pass".into(),
+                url: None,
+                notes: None,
+                created_at: now_secs(),
+                updated_at: now_secs(),
+            }],
+        };
+        // delete_entry returns Err before touching the filesystem when id not found
+        let dummy_key = [0u8; 32];
+        let result = delete_entry(&dummy_key, &mut data, "nonexistent-id");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Entry not found");
+        // original entry untouched
+        assert_eq!(data.entries.len(), 1);
+    }
+
+    #[test]
     fn multiple_entries_survive_roundtrip() {
         let dir = setup_temp_vault("multiple_entries");
         create_vault_at(&dir, "password");

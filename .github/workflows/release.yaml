@@ -36,11 +36,22 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -53,7 +64,7 @@ jobs:
             patchelf
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
 
       - name: Build
         uses: tauri-apps/tauri-action@v0
