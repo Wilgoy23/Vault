@@ -193,6 +193,29 @@ pub fn delete_entry(key: &[u8; 32], data: &mut VaultData, id: &str) -> Result<()
     save_vault(key, data)
 }
 
+/// Copies the encrypted vault file to the given destination path.
+pub fn export_vault(dest_path: &str) -> Result<(), String> {
+    let src = vault_path();
+    if !src.exists() {
+        return Err("No vault to export".into());
+    }
+    fs::copy(&src, dest_path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Replaces the current vault file with one from the given source path.
+/// Validates that the source is a valid vault file before overwriting.
+pub fn import_vault(src_path: &str) -> Result<(), String> {
+    let raw = fs::read_to_string(src_path)
+        .map_err(|_| "Cannot read the selected file".to_string())?;
+    let _: VaultFile = serde_json::from_str(&raw)
+        .map_err(|_| "Selected file is not a valid vault backup".to_string())?;
+    let dest = vault_path();
+    fs::create_dir_all(dest.parent().unwrap()).map_err(|e| e.to_string())?;
+    fs::copy(src_path, &dest).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,6 +377,67 @@ mod tests {
         let (_key2, data2) = unlock_vault_at(&dir, "password");
         assert_eq!(data2.entries[0].name, "New Name");
         assert_eq!(data2.entries[0].email, "new@example.com");
+    }
+
+    #[test]
+    fn export_fails_when_no_vault_exists() {
+        // vault_path() won't exist in a fresh temp env — export should report it
+        let dest = env::temp_dir().join("vault_tests").join("export_no_vault_dest.enc");
+        // Only meaningful if the system vault path doesn't exist (CI / clean machine).
+        // If it does exist locally, skip gracefully.
+        let src = dirs::config_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("vault")
+            .join("vault.enc");
+        if !src.exists() {
+            let result = export_vault(dest.to_str().unwrap());
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err(), "No vault to export");
+        }
+    }
+
+    #[test]
+    fn import_rejects_invalid_json() {
+        let dir = setup_temp_vault("import_invalid_json");
+        let bad_file = dir.join("bad.enc");
+        fs::write(&bad_file, b"this is not json").unwrap();
+        let result = import_vault(bad_file.to_str().unwrap());
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Selected file is not a valid vault backup");
+    }
+
+    #[test]
+    fn import_rejects_json_missing_required_fields() {
+        let dir = setup_temp_vault("import_missing_fields");
+        let bad_file = dir.join("bad.enc");
+        fs::write(&bad_file, br#"{"foo": "bar"}"#).unwrap();
+        let result = import_vault(bad_file.to_str().unwrap());
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Selected file is not a valid vault backup");
+    }
+
+    #[test]
+    fn delete_entry_not_found_returns_error() {
+        let mut data = VaultData {
+            entries: vec![Entry {
+                id: "real-id".into(),
+                name: "Test".into(),
+                username: None,
+                email: "a@b.com".into(),
+                password: "pass".into(),
+                url: None,
+                notes: None,
+                created_at: now_secs(),
+                updated_at: now_secs(),
+            }],
+        };
+        // delete_entry returns Err before touching the filesystem when id not found
+        let dummy_key = [0u8; 32];
+        let result = delete_entry(&dummy_key, &mut data, "nonexistent-id");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Entry not found");
+        // original entry untouched
+        assert_eq!(data.entries.len(), 1);
     }
 
     #[test]
