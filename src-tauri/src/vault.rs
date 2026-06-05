@@ -353,6 +353,7 @@ mod tests {
             password: "hunter2".into(),
             url: Some("github.com".into()),
             notes: None,
+            folder_id: None,
             created_at: now_secs(),
             updated_at: now_secs(),
         };
@@ -380,6 +381,7 @@ mod tests {
             password: "pass".into(),
             url: None,
             notes: None,
+            folder_id: None,
             created_at: now_secs(),
             updated_at: now_secs(),
         });
@@ -407,6 +409,7 @@ mod tests {
             password: "oldpass".into(),
             url: None,
             notes: None,
+            folder_id: None,
             created_at: now_secs(),
             updated_at: now_secs(),
         });
@@ -472,9 +475,11 @@ mod tests {
                 password: "pass".into(),
                 url: None,
                 notes: None,
+                folder_id: None,
                 created_at: now_secs(),
                 updated_at: now_secs(),
             }],
+            folders: vec![],
         };
         // delete_entry returns Err before touching the filesystem when id not found
         let dummy_key = [0u8; 32];
@@ -500,6 +505,7 @@ mod tests {
                 password: format!("pass{i}"),
                 url: None,
                 notes: None,
+                folder_id: None,
                 created_at: now_secs(),
                 updated_at: now_secs(),
             });
