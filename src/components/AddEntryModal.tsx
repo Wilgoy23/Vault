@@ -1,19 +1,24 @@
 import { useState } from "react";
 import { addEntry } from "../api";
-import { Entry } from "../types";
+import { Entry, Folder } from "../types";
 import PasswordInput from "./PasswordInput";
 
 interface Props {
+  folders: Folder[];
+  defaultFolderId?: string;
   onAdded: (entry: Entry) => void;
   onClose: () => void;
 }
 
-export default function AddEntryModal({ onAdded, onClose }: Props) {
-  const [form, setForm] = useState({ name: "", username: "", email: "", password: "", url: "", notes: "" });
+export default function AddEntryModal({ folders, defaultFolderId, onAdded, onClose }: Props) {
+  const [form, setForm] = useState({
+    name: "", username: "", email: "", password: "", url: "", notes: "",
+    folder_id: defaultFolderId ?? "",
+  });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const set = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+  const set = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
     setForm({ ...form, [key]: e.target.value });
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -32,6 +37,7 @@ export default function AddEntryModal({ onAdded, onClose }: Props) {
         password: form.password,
         url: form.url || undefined,
         notes: form.notes || undefined,
+        folder_id: form.folder_id || undefined,
       });
       onAdded(entry);
     } catch (err: any) {
@@ -65,6 +71,22 @@ export default function AddEntryModal({ onAdded, onClose }: Props) {
             rows={3}
             style={{ resize: "vertical" }}
           />
+          {folders.length > 0 && (
+            <select
+              value={form.folder_id}
+              onChange={set("folder_id")}
+              style={{
+                background: "rgba(255,255,255,0.06)", color: "var(--text)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius)", padding: "8px 10px", fontSize: "13px",
+              }}
+            >
+              <option value="">No folder</option>
+              {folders.map((f) => (
+                <option key={f.id} value={f.id}>{f.name}</option>
+              ))}
+            </select>
+          )}
           {error && <p className="error">{error}</p>}
           <div style={{ display: "flex", gap: "8px", marginTop: "4px" }}>
             <button type="button" className="btn-ghost" onClick={onClose} style={{ flex: 1 }}>Cancel</button>

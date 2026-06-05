@@ -12,7 +12,7 @@ use tauri::{
 };
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
-use vault::{Entry, VaultData};
+use vault::{Entry, Folder, VaultData};
 
 /// The session state held in memory while the vault is unlocked.
 /// Both fields are None when locked.
@@ -90,12 +90,13 @@ fn add_entry(
     password: String,
     url: Option<String>,
     notes: Option<String>,
+    folder_id: Option<String>,
     state: State<VaultState>,
 ) -> Result<Entry, String> {
     let mut s = state.lock().unwrap();
     let key = s.key.ok_or("Vault is locked")?;
     let data = s.data.as_mut().ok_or("Vault is locked")?;
-    vault::add_entry(&key, data, name, username, email, password, url, notes)
+    vault::add_entry(&key, data, name, username, email, password, url, notes, folder_id)
 }
 
 #[tauri::command]
@@ -107,12 +108,46 @@ fn update_entry(
     password: String,
     url: Option<String>,
     notes: Option<String>,
+    folder_id: Option<String>,
     state: State<VaultState>,
 ) -> Result<(), String> {
     let mut s = state.lock().unwrap();
     let key = s.key.ok_or("Vault is locked")?;
     let data = s.data.as_mut().ok_or("Vault is locked")?;
-    vault::update_entry(&key, data, &id, name, username, email, password, url, notes)
+    vault::update_entry(&key, data, &id, name, username, email, password, url, notes, folder_id)
+}
+
+#[tauri::command]
+fn list_folders(state: State<VaultState>) -> Result<Vec<Folder>, String> {
+    let s = state.lock().unwrap();
+    s.data
+        .as_ref()
+        .map(|d| d.folders.clone())
+        .ok_or("Vault is locked".into())
+}
+
+#[tauri::command]
+fn add_folder(name: String, state: State<VaultState>) -> Result<Folder, String> {
+    let mut s = state.lock().unwrap();
+    let key = s.key.ok_or("Vault is locked")?;
+    let data = s.data.as_mut().ok_or("Vault is locked")?;
+    vault::add_folder(&key, data, name)
+}
+
+#[tauri::command]
+fn rename_folder(id: String, name: String, state: State<VaultState>) -> Result<(), String> {
+    let mut s = state.lock().unwrap();
+    let key = s.key.ok_or("Vault is locked")?;
+    let data = s.data.as_mut().ok_or("Vault is locked")?;
+    vault::rename_folder(&key, data, &id, name)
+}
+
+#[tauri::command]
+fn delete_folder(id: String, state: State<VaultState>) -> Result<(), String> {
+    let mut s = state.lock().unwrap();
+    let key = s.key.ok_or("Vault is locked")?;
+    let data = s.data.as_mut().ok_or("Vault is locked")?;
+    vault::delete_folder(&key, data, &id)
 }
 
 #[tauri::command]
@@ -180,6 +215,10 @@ fn main() {
             add_entry,
             update_entry,
             delete_entry,
+            list_folders,
+            add_folder,
+            rename_folder,
+            delete_folder,
             export_vault,
             import_vault,
             enable_autostart,

@@ -1,3 +1,8 @@
+export interface Folder {
+  id: string;
+  name: string;
+}
+
 export interface Entry {
   id: string;
   name: string;
@@ -6,6 +11,7 @@ export interface Entry {
   password: string;
   url?: string;
   notes?: string;
+  folder_id?: string;
   created_at: number;
   updated_at: number;
 }

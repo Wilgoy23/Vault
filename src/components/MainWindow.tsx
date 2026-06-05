@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { listEntries, lock, isAutostartEnabled, enableAutostart, disableAutostart, exportVault, importVault } from "../api";
-import { Entry } from "../types";
+import { listEntries, listFolders, lock, isAutostartEnabled, enableAutostart, disableAutostart, exportVault, importVault, addFolder, renameFolder, deleteFolder } from "../api";
+import { Entry, Folder } from "../types";
 import EntryList from "./EntryList";
 import EntryDetail from "./EntryDetail";
 import AddEntryModal from "./AddEntryModal";
@@ -22,13 +22,16 @@ interface Props {
 
 export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange }: Props) {
   const [entries, setEntries] = useState<Entry[]>([]);
+  const [folders, setFolders] = useState<Folder[]>([]);
   const [selected, setSelected] = useState<Entry | null>(null);
   const [search, setSearch] = useState("");
+  const [activeFolder, setActiveFolder] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [autostart, setAutostart] = useState(false);
 
   useEffect(() => {
     listEntries().then(setEntries);
+    listFolders().then(setFolders);
     isAutostartEnabled().then(setAutostart).catch(() => {});
   }, []);
 
@@ -86,6 +89,25 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange }: Pro
     setSelected(null);
   };
 
+  const handleFolderAdded = async (name: string) => {
+    const folder = await addFolder(name);
+    setFolders((prev) => [...prev, folder]);
+    return folder;
+  };
+
+  const handleFolderRenamed = async (id: string, name: string) => {
+    await renameFolder(id, name);
+    setFolders((prev) => prev.map((f) => (f.id === id ? { ...f, name } : f)));
+  };
+
+  const handleFolderDeleted = async (id: string) => {
+    await deleteFolder(id);
+    setFolders((prev) => prev.filter((f) => f.id !== id));
+    // Unassign entries that were in this folder
+    setEntries((prev) => prev.map((e) => e.folder_id === id ? { ...e, folder_id: undefined } : e));
+    if (activeFolder === id) setActiveFolder(null);
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
       {/* Titlebar */}
@@ -138,14 +160,20 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange }: Pro
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         <EntryList
           entries={entries}
+          folders={folders}
+          activeFolder={activeFolder}
+          onFolderChange={setActiveFolder}
+          onFolderAdded={handleFolderAdded}
+          onFolderRenamed={handleFolderRenamed}
+          onFolderDeleted={handleFolderDeleted}
           selectedId={selected?.id ?? null}
           onSelect={setSelected}
           search={search}
           onSearchChange={setSearch}
         />
-        <div style={{ flex: 1, overflow: "hidden" }}>
+        <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
           {selected
-            ? <EntryDetail entry={selected} onUpdated={handleUpdated} onDeleted={handleDeleted} />
+            ? <EntryDetail entry={selected} folders={folders} onUpdated={handleUpdated} onDeleted={handleDeleted} />
             : (
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--muted)" }}>
                 {entries.length === 0 ? "No entries yet — add one to get started." : "Select an entry to view it."}
@@ -155,7 +183,14 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange }: Pro
         </div>
       </div>
 
-      {showAdd && <AddEntryModal onAdded={handleAdded} onClose={() => setShowAdd(false)} />}
+      {showAdd && (
+        <AddEntryModal
+          folders={folders}
+          defaultFolderId={activeFolder ?? undefined}
+          onAdded={handleAdded}
+          onClose={() => setShowAdd(false)}
+        />
+      )}
     </div>
   );
 }
