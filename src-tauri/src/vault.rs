@@ -6,6 +6,13 @@ use uuid::Uuid;
 
 use crate::crypto;
 
+/// A user-defined folder for grouping entries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Folder {
+    pub id: String,
+    pub name: String,
+}
+
 /// A single password entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
@@ -17,6 +24,8 @@ pub struct Entry {
     pub password: String,
     pub url: Option<String>,
     pub notes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -25,6 +34,8 @@ pub struct Entry {
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct VaultData {
     pub entries: Vec<Entry>,
+    #[serde(default)]
+    pub folders: Vec<Folder>,
 }
 
 /// On-disk vault file format.
@@ -136,6 +147,7 @@ pub fn add_entry(
     password: String,
     url: Option<String>,
     notes: Option<String>,
+    folder_id: Option<String>,
 ) -> Result<Entry, String> {
     let now = now_secs();
     let entry = Entry {
@@ -146,6 +158,7 @@ pub fn add_entry(
         password,
         url,
         notes,
+        folder_id,
         created_at: now,
         updated_at: now,
     };
@@ -165,6 +178,7 @@ pub fn update_entry(
     password: String,
     url: Option<String>,
     notes: Option<String>,
+    folder_id: Option<String>,
 ) -> Result<(), String> {
     let entry = data
         .entries
@@ -178,8 +192,39 @@ pub fn update_entry(
     entry.password = password;
     entry.url = url;
     entry.notes = notes;
+    entry.folder_id = folder_id;
     entry.updated_at = now_secs();
 
+    save_vault(key, data)
+}
+
+/// Adds a new folder and saves the vault.
+pub fn add_folder(key: &[u8; 32], data: &mut VaultData, name: String) -> Result<Folder, String> {
+    let folder = Folder { id: Uuid::new_v4().to_string(), name };
+    data.folders.push(folder.clone());
+    save_vault(key, data)?;
+    Ok(folder)
+}
+
+/// Renames an existing folder by id and saves the vault.
+pub fn rename_folder(key: &[u8; 32], data: &mut VaultData, id: &str, name: String) -> Result<(), String> {
+    let folder = data.folders.iter_mut().find(|f| f.id == id).ok_or("Folder not found")?;
+    folder.name = name;
+    save_vault(key, data)
+}
+
+/// Deletes a folder by id, unassigns all entries in it, and saves the vault.
+pub fn delete_folder(key: &[u8; 32], data: &mut VaultData, id: &str) -> Result<(), String> {
+    let before = data.folders.len();
+    data.folders.retain(|f| f.id != id);
+    if data.folders.len() == before {
+        return Err("Folder not found".into());
+    }
+    for entry in data.entries.iter_mut() {
+        if entry.folder_id.as_deref() == Some(id) {
+            entry.folder_id = None;
+        }
+    }
     save_vault(key, data)
 }
 
@@ -308,6 +353,7 @@ mod tests {
             password: "hunter2".into(),
             url: Some("github.com".into()),
             notes: None,
+            folder_id: None,
             created_at: now_secs(),
             updated_at: now_secs(),
         };
@@ -335,6 +381,7 @@ mod tests {
             password: "pass".into(),
             url: None,
             notes: None,
+            folder_id: None,
             created_at: now_secs(),
             updated_at: now_secs(),
         });
@@ -362,6 +409,7 @@ mod tests {
             password: "oldpass".into(),
             url: None,
             notes: None,
+            folder_id: None,
             created_at: now_secs(),
             updated_at: now_secs(),
         });
@@ -427,9 +475,11 @@ mod tests {
                 password: "pass".into(),
                 url: None,
                 notes: None,
+                folder_id: None,
                 created_at: now_secs(),
                 updated_at: now_secs(),
             }],
+            folders: vec![],
         };
         // delete_entry returns Err before touching the filesystem when id not found
         let dummy_key = [0u8; 32];
@@ -455,6 +505,7 @@ mod tests {
                 password: format!("pass{i}"),
                 url: None,
                 notes: None,
+                folder_id: None,
                 created_at: now_secs(),
                 updated_at: now_secs(),
             });

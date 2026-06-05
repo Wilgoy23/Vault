@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { save, open } from "@tauri-apps/plugin-dialog";
-import { Entry } from "./types";
+import { Entry, Folder } from "./types";
 
 export const vaultExists = () =>
   invoke<boolean>("vault_exists");
@@ -27,6 +27,7 @@ export const addEntry = (payload: {
   password: string;
   url?: string;
   notes?: string;
+  folder_id?: string;
 }) => invoke<Entry>("add_entry", payload);
 
 export const updateEntry = (payload: {
@@ -37,7 +38,20 @@ export const updateEntry = (payload: {
   password: string;
   url?: string;
   notes?: string;
+  folder_id?: string;
 }) => invoke<void>("update_entry", payload);
+
+export const listFolders = () =>
+  invoke<Folder[]>("list_folders");
+
+export const addFolder = (name: string) =>
+  invoke<Folder>("add_folder", { name });
+
+export const renameFolder = (id: string, name: string) =>
+  invoke<void>("rename_folder", { id, name });
+
+export const deleteFolder = (id: string) =>
+  invoke<void>("delete_folder", { id });
 
 export const deleteEntry = (id: string) =>
   invoke<void>("delete_entry", { id });

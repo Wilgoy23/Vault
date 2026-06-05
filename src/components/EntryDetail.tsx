@@ -1,15 +1,16 @@
 import { useState } from "react";
-import { Entry } from "../types";
+import { Entry, Folder } from "../types";
 import { updateEntry, deleteEntry } from "../api";
 import PasswordInput from "./PasswordInput";
 
 interface Props {
   entry: Entry;
+  folders: Folder[];
   onUpdated: (entry: Entry) => void;
   onDeleted: (id: string) => void;
 }
 
-export default function EntryDetail({ entry, onUpdated, onDeleted }: Props) {
+export default function EntryDetail({ entry, folders, onUpdated, onDeleted }: Props) {
   const [editing, setEditing] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [copied, setCopied] = useState<"password" | "email" | "username" | null>(null);
@@ -22,7 +23,6 @@ export default function EntryDetail({ entry, onUpdated, onDeleted }: Props) {
     await navigator.clipboard.writeText(value);
     setCopied(type);
     setTimeout(() => setCopied(null), 2000);
-    // Clear clipboard after 30 seconds
     setTimeout(() => navigator.clipboard.writeText(""), 30000);
   };
 
@@ -41,6 +41,7 @@ export default function EntryDetail({ entry, onUpdated, onDeleted }: Props) {
         password: form.password,
         url: form.url || undefined,
         notes: form.notes || undefined,
+        folder_id: form.folder_id || undefined,
       });
       onUpdated({ ...form, updated_at: Date.now() / 1000 });
       setEditing(false);
@@ -73,8 +74,10 @@ export default function EntryDetail({ entry, onUpdated, onDeleted }: Props) {
     </div>
   );
 
+  const currentFolder = folders.find((f) => f.id === entry.folder_id);
+
   return (
-    <div style={{ flex: 1, padding: "28px", overflowY: "auto" }}>
+    <div style={{ flex: 1, minHeight: 0, padding: "28px", overflowY: "auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px" }}>
         <h2 style={{ fontSize: "18px", fontWeight: 600 }}>{entry.name}</h2>
         <div style={{ display: "flex", gap: "8px" }}>
@@ -119,6 +122,35 @@ export default function EntryDetail({ entry, onUpdated, onDeleted }: Props) {
 
       {field("URL", "url")}
       {field("Notes", "notes")}
+
+      {/* Folder field */}
+      {folders.length > 0 && (
+        <div style={{ marginBottom: "16px" }}>
+          <div style={{ color: "var(--muted)", fontSize: "12px", marginBottom: "4px" }}>Folder</div>
+          {editing ? (
+            <select
+              value={form.folder_id ?? ""}
+              onChange={(e) => setForm({ ...form, folder_id: e.target.value || undefined })}
+              style={{
+                background: "rgba(255,255,255,0.06)", color: "var(--text)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius)", padding: "8px 10px", fontSize: "13px", width: "100%",
+              }}
+            >
+              <option value="">No folder</option>
+              {folders.map((f) => (
+                <option key={f.id} value={f.id}>{f.name}</option>
+              ))}
+            </select>
+          ) : (
+            <div style={{ fontSize: "14px" }}>
+              {currentFolder
+                ? currentFolder.name
+                : <span style={{ color: "var(--muted)" }}>—</span>}
+            </div>
+          )}
+        </div>
+      )}
 
       {!editing && (
         <div style={{ marginTop: "24px", paddingTop: "20px", borderTop: "1px solid var(--border)", display: "flex", gap: "8px" }}>
