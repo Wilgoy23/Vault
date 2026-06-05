@@ -5,6 +5,7 @@
   "windows": ["main", "overlay"],
   "permissions": [
     "core:default",
+    "core:window:allow-close",
     "core:window:allow-hide",
     "dialog:allow-open",
     "dialog:allow-save",
