@@ -25,6 +25,7 @@ export const THEMES: Theme[] = [
       "--accent-glow": "rgba(77,157,224,0.30)",
       "--glass-bg": "rgba(255,255,255,0.06)",
       "--glass-border": "rgba(255,255,255,0.10)",
+      "--select-bg": "#0D1F38",
     },
     bodyBackground: `
       radial-gradient(ellipse 70% 60% at 15% 15%, rgba(30,80,200,0.35) 0%, transparent 60%),
@@ -50,6 +51,7 @@ export const THEMES: Theme[] = [
       "--accent-glow": "rgba(167,139,250,0.30)",
       "--glass-bg": "rgba(255,255,255,0.05)",
       "--glass-border": "rgba(255,255,255,0.09)",
+      "--select-bg": "#161626",
     },
     bodyBackground: `
       radial-gradient(ellipse 70% 60% at 15% 15%, rgba(100,50,220,0.30) 0%, transparent 60%),
@@ -75,6 +77,7 @@ export const THEMES: Theme[] = [
       "--accent-glow": "rgba(52,211,153,0.28)",
       "--glass-bg": "rgba(255,255,255,0.05)",
       "--glass-border": "rgba(255,255,255,0.09)",
+      "--select-bg": "#0E2018",
     },
     bodyBackground: `
       radial-gradient(ellipse 70% 60% at 15% 15%, rgba(20,120,70,0.30) 0%, transparent 60%),
@@ -100,6 +103,7 @@ export const THEMES: Theme[] = [
       "--accent-glow": "rgba(251,113,133,0.30)",
       "--glass-bg": "rgba(255,255,255,0.05)",
       "--glass-border": "rgba(255,255,255,0.09)",
+      "--select-bg": "#201414",
     },
     bodyBackground: `
       radial-gradient(ellipse 70% 60% at 15% 15%, rgba(180,40,40,0.28) 0%, transparent 60%),
@@ -125,6 +129,7 @@ export const THEMES: Theme[] = [
       "--accent-glow": "rgba(34,211,238,0.28)",
       "--glass-bg": "rgba(255,255,255,0.06)",
       "--glass-border": "rgba(255,255,255,0.10)",
+      "--select-bg": "#131820",
     },
     bodyBackground: `
       radial-gradient(ellipse 70% 60% at 15% 15%, rgba(20,80,120,0.30) 0%, transparent 60%),

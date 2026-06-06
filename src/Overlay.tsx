@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit } from "@tauri-apps/api/event";
 import { isUnlocked, listEntries, unlock } from "./api";
 import { Entry } from "./types";
+import { applyTheme, DEFAULT_THEME_ID } from "./themes";
 import "./App.css";
 
 export default function Overlay() {
@@ -19,6 +20,7 @@ export default function Overlay() {
   const selectedItemRef = useRef<HTMLDivElement>(null);
 
   const resetAndLoad = async () => {
+    applyTheme(localStorage.getItem("vault_theme") ?? DEFAULT_THEME_ID);
     setSearch("");
     setCopied(null);
     setSelectedIndex(0);

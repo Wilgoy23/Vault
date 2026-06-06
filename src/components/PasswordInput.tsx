@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { RefreshCw, Wand2 } from "lucide-react";
 import { generatePassword, GenOptions, DEFAULT_OPTIONS } from "../utils/passwordGen";
 
 interface Props {
@@ -12,13 +13,10 @@ export default function PasswordInput({ value, onChange }: Props) {
   const [preview, setPreview] = useState("");
   const popoverRef = useRef<HTMLDivElement>(null);
 
-  // Close popover on outside click
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
+      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) setOpen(false);
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
@@ -26,20 +24,13 @@ export default function PasswordInput({ value, onChange }: Props) {
 
   const refreshPreview = (o: GenOptions) => setPreview(generatePassword(o));
 
-  const openGenerator = () => {
-    refreshPreview(opts);
-    setOpen(true);
-  };
+  const openGenerator = () => { refreshPreview(opts); setOpen(true); };
 
-  const applyPassword = () => {
-    onChange(preview);
-    setOpen(false);
-  };
+  const applyPassword = () => { onChange(preview); setOpen(false); };
 
   const toggleOpt = (key: keyof Omit<GenOptions, "length">) => {
     const next = { ...opts, [key]: !opts[key] };
-    // Always keep at least one character class active
-    const active = [next.upper, next.numbers, next.symbols, true]; // lower is always on
+    const active = [next.upper, next.numbers, next.symbols, true];
     if (!active.some(Boolean)) return;
     setOpts(next);
     refreshPreview(next);
@@ -70,11 +61,12 @@ export default function PasswordInput({ value, onChange }: Props) {
         />
         <button
           type="button"
-          className="btn-ghost"
+          className="btn-icon"
           onClick={openGenerator}
-          style={{ padding: "0 12px", fontSize: "13px", whiteSpace: "nowrap" }}
+          title="Generate password"
+          style={{ width: "36px", height: "36px", flexShrink: 0 }}
         >
-          Generate
+          <Wand2 size={14} strokeWidth={2} />
         </button>
       </div>
 
@@ -82,32 +74,22 @@ export default function PasswordInput({ value, onChange }: Props) {
         <div
           ref={popoverRef}
           style={{
-            position: "absolute",
-            top: "calc(100% + 6px)",
-            right: 0,
-            zIndex: 200,
-            background: "rgba(8,18,40,0.82)",
+            position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 200,
+            background: "rgba(8,18,40,0.88)",
             backdropFilter: "blur(20px) saturate(200%)",
             WebkitBackdropFilter: "blur(20px) saturate(200%)",
             border: "1px solid rgba(255,255,255,0.12)",
-            borderRadius: "var(--radius-lg)",
-            padding: "16px",
-            width: "300px",
+            borderRadius: "var(--radius-lg)", padding: "16px", width: "300px",
             boxShadow: "0 12px 40px rgba(0,0,0,0.6), 0 0 40px rgba(30,80,200,0.10)",
           }}
         >
           {/* Preview */}
           <div style={{
-            fontFamily: "monospace",
-            fontSize: "13px",
+            fontFamily: "monospace", fontSize: "13px",
             background: "rgba(255,255,255,0.05)",
             border: "1px solid rgba(255,255,255,0.10)",
-            borderRadius: "var(--radius)",
-            padding: "8px 10px",
-            marginBottom: "12px",
-            wordBreak: "break-all",
-            color: "var(--fg)",
-            lineHeight: 1.5,
+            borderRadius: "var(--radius)", padding: "8px 10px", marginBottom: "12px",
+            wordBreak: "break-all", lineHeight: 1.5,
           }}>
             {preview}
           </div>
@@ -119,11 +101,12 @@ export default function PasswordInput({ value, onChange }: Props) {
             </span>
             <button
               type="button"
-              className="btn-ghost"
+              className="btn-icon"
               onClick={() => refreshPreview(opts)}
-              style={{ padding: "2px 10px", fontSize: "12px" }}
+              title="Regenerate"
+              style={{ width: "28px", height: "28px" }}
             >
-              Regenerate
+              <RefreshCw size={12} strokeWidth={2} />
             </button>
           </div>
 
@@ -131,13 +114,10 @@ export default function PasswordInput({ value, onChange }: Props) {
           <div style={{ marginBottom: "12px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", color: "var(--muted)", marginBottom: "4px" }}>
               <span>Length</span>
-              <span style={{ color: "var(--fg)", fontWeight: 600 }}>{opts.length}</span>
+              <span style={{ color: "var(--text)", fontWeight: 600 }}>{opts.length}</span>
             </div>
             <input
-              type="range"
-              min={8}
-              max={64}
-              value={opts.length}
+              type="range" min={8} max={64} value={opts.length}
               onChange={(e) => setLength(Number(e.target.value))}
               style={{ width: "100%", accentColor: "var(--accent)" }}
             />
@@ -151,14 +131,11 @@ export default function PasswordInput({ value, onChange }: Props) {
                 type="button"
                 onClick={() => toggleOpt(key)}
                 style={{
-                  padding: "4px 10px",
-                  fontSize: "12px",
-                  borderRadius: "var(--radius)",
+                  padding: "4px 10px", fontSize: "12px", borderRadius: "var(--radius)",
                   border: `1px solid ${opts[key] ? "var(--accent)" : "var(--border)"}`,
-                  background: opts[key] ? "rgba(99,102,241,0.15)" : "transparent",
+                  background: opts[key] ? "rgba(77,157,224,0.12)" : "transparent",
                   color: opts[key] ? "var(--accent)" : "var(--muted)",
-                  cursor: "pointer",
-                  transition: "all 0.15s",
+                  cursor: "pointer", transition: "all 0.15s",
                 }}
               >
                 {label}
@@ -166,13 +143,7 @@ export default function PasswordInput({ value, onChange }: Props) {
             ))}
           </div>
 
-          {/* Apply button */}
-          <button
-            type="button"
-            className="btn-primary"
-            onClick={applyPassword}
-            style={{ width: "100%", fontSize: "13px" }}
-          >
+          <button type="button" className="btn-primary" onClick={applyPassword} style={{ width: "100%", fontSize: "13px" }}>
             Use this password
           </button>
         </div>

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Plus, Lock, Settings } from "lucide-react";
 import { listEntries, listFolders, lock, isAutostartEnabled, addFolder, renameFolder, deleteFolder } from "../api";
 import { Entry, Folder } from "../types";
 import EntryList from "./EntryList";
@@ -30,10 +31,7 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
     isAutostartEnabled().then(setAutostart).catch(() => {});
   }, []);
 
-  const handleLock = async () => {
-    await lock();
-    onLocked();
-  };
+  const handleLock = async () => { await lock(); onLocked(); };
 
   const handleAdded = (entry: Entry) => {
     setEntries((prev) => [...prev, entry]);
@@ -74,33 +72,43 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
       {/* Titlebar */}
       <div className="glass" style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "0 16px", height: "48px",
+        padding: "0 14px", height: "48px",
         borderLeft: "none", borderRight: "none", borderTop: "none",
         flexShrink: 0,
       }}>
-        <span style={{ fontWeight: 600, fontSize: "15px" }}>Vault</span>
-        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <div className="wordmark-logo">
+            <svg width="13" height="14" viewBox="0 0 13 14" fill="none">
+              <path d="M6.5 1.2L1.5 3.2V7C1.5 9.8 3.7 12.2 6.5 12.8C9.3 12.2 11.5 9.8 11.5 7V3.2L6.5 1.2Z" fill="white" fillOpacity="0.95"/>
+              <path d="M4.5 7L6 8.5L9 5.5" stroke="#1A5FA8" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </div>
+          <span style={{ fontWeight: 700, fontSize: "14px", letterSpacing: "-0.025em", color: "var(--text)" }}>
+            Vault
+          </span>
+        </div>
+        <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
           <button
             className="btn-primary"
-            style={{ padding: "6px 14px", fontSize: "13px" }}
+            style={{ padding: "6px 12px", fontSize: "13px", display: "flex", alignItems: "center", gap: "5px" }}
             onClick={() => setShowAdd(true)}
           >
-            + Add entry
+            <Plus size={14} strokeWidth={2.5} />
+            Add entry
           </button>
           <button
-            className="btn-ghost"
-            style={{ padding: "6px 14px", fontSize: "13px" }}
+            className="btn-icon"
             onClick={handleLock}
+            title="Lock vault"
           >
-            Lock
+            <Lock size={15} strokeWidth={2} />
           </button>
           <button
-            className="btn-ghost"
-            style={{ padding: "6px 10px", fontSize: "16px", lineHeight: 1 }}
+            className="btn-icon"
             onClick={() => setShowSettings(true)}
             title="Settings"
           >
-            ⚙
+            <Settings size={15} strokeWidth={2} />
           </button>
         </div>
       </div>
@@ -124,8 +132,11 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
           {selected
             ? <EntryDetail entry={selected} folders={folders} onUpdated={handleUpdated} onDeleted={handleDeleted} />
             : (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--muted)" }}>
-                {entries.length === 0 ? "No entries yet — add one to get started." : "Select an entry to view it."}
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "10px" }}>
+                <div style={{ color: "var(--muted)", opacity: 0.25, fontSize: "48px" }}>🔐</div>
+                <p style={{ color: "var(--muted)", fontSize: "13px" }}>
+                  {entries.length === 0 ? "No entries yet — add one to get started." : "Select an entry to view it."}
+                </p>
               </div>
             )
           }
