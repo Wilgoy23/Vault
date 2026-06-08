@@ -85,3 +85,9 @@ export const disableAutostart = () =>
 
 export const isAutostartEnabled = () =>
   invoke<boolean>("is_autostart_enabled");
+
+export const getOverlayShortcut = () =>
+  invoke<string>("get_overlay_shortcut");
+
+export const setOverlayShortcut = (shortcutStr: string) =>
+  invoke<void>("set_overlay_shortcut", { shortcutStr });

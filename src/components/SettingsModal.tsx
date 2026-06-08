@@ -1,4 +1,5 @@
-import { Palette, Shield, Monitor, Database, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Palette, Shield, Monitor, Database, X, Keyboard } from "lucide-react";
 import { THEMES, Theme } from "../themes";
 import { exportVault, importVault, enableAutostart, disableAutostart } from "../api";
 
@@ -18,6 +19,8 @@ interface Props {
   onTimeoutChange: (ms: number) => void;
   autostart: boolean;
   onAutostartChange: (v: boolean) => void;
+  shortcut: string;
+  onShortcutChange: (s: string) => void;
   onImported: () => void;
   onClose: () => void;
 }
@@ -26,6 +29,7 @@ export default function SettingsModal({
   themeId, onThemeChange,
   timeoutMs, onTimeoutChange,
   autostart, onAutostartChange,
+  shortcut, onShortcutChange,
   onImported, onClose,
 }: Props) {
   const handleAutostartToggle = async () => {
@@ -115,6 +119,14 @@ export default function SettingsModal({
 
           <Divider />
 
+          <Section icon={<Keyboard size={13} strokeWidth={2} />} label="Shortcuts">
+            <Row label="Open overlay">
+              <KeybindRecorder value={shortcut} onChange={onShortcutChange} />
+            </Row>
+          </Section>
+
+          <Divider />
+
           <Section icon={<Database size={13} strokeWidth={2} />} label="Data">
             <Row label="Vault backup">
               <div style={{ display: "flex", gap: "8px" }}>
@@ -184,6 +196,52 @@ function ThemeSwatch({ theme, active, onSelect }: { theme: Theme; active: boolea
       <span style={{ fontSize: "11px", color: active ? "var(--accent)" : "var(--muted)", fontWeight: active ? 600 : 400, transition: "color 0.15s" }}>
         {theme.name}
       </span>
+    </button>
+  );
+}
+
+function KeybindRecorder({ value, onChange }: { value: string; onChange: (s: string) => void }) {
+  const [recording, setRecording] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!recording) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      e.preventDefault();
+      if (e.key === "Escape") { setRecording(false); return; }
+      const isModifierOnly = ["Control", "Alt", "Shift", "Meta"].includes(e.key);
+      if (isModifierOnly) return;
+      const mods = [
+        e.ctrlKey  && "Ctrl",
+        e.altKey   && "Alt",
+        e.shiftKey && "Shift",
+        e.metaKey  && "Meta",
+      ].filter(Boolean) as string[];
+      const key = e.code
+        .replace(/^Key/, "")
+        .replace(/^Digit/, "")
+        .replace(/^Arrow/, "Arrow");
+      onChange([...mods, key].join("+"));
+      setRecording(false);
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [recording, onChange]);
+
+  return (
+    <button
+      ref={btnRef}
+      className="btn-ghost"
+      onClick={() => setRecording(true)}
+      style={{
+        fontSize: "12.5px", padding: "5px 14px",
+        fontFamily: "var(--mono)", minWidth: "130px",
+        borderColor: recording ? "var(--accent)" : undefined,
+        color: recording ? "var(--accent)" : undefined,
+        boxShadow: recording ? "0 0 0 3px var(--accent-tint)" : undefined,
+      }}
+    >
+      {recording ? "Press keys…" : value}
     </button>
   );
 }

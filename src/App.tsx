@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { vaultExists, isUnlocked, lock } from "./api";
+import { vaultExists, isUnlocked, lock, getOverlayShortcut, setOverlayShortcut } from "./api";
 import LockScreen from "./components/LockScreen";
 import MainWindow from "./components/MainWindow";
 import { useAutoLock } from "./utils/useAutoLock";
@@ -98,6 +98,12 @@ export default function App() {
     return localStorage.getItem(THEME_KEY) ?? DEFAULT_THEME_ID;
   });
 
+  const [shortcut, setShortcut] = useState("Ctrl+Shift+P");
+
+  useEffect(() => {
+    getOverlayShortcut().then(setShortcut).catch(() => {});
+  }, []);
+
   // Apply theme on mount and whenever it changes
   useEffect(() => {
     applyTheme(themeId);
@@ -125,6 +131,15 @@ export default function App() {
   const handleThemeChange = (id: string) => {
     setThemeId(id);
     localStorage.setItem(THEME_KEY, id);
+  };
+
+  const handleShortcutChange = async (s: string) => {
+    try {
+      await setOverlayShortcut(s);
+      setShortcut(s);
+    } catch (e) {
+      console.error("Failed to set shortcut:", e);
+    }
   };
 
   useEffect(() => {
@@ -163,6 +178,8 @@ export default function App() {
         onTimeoutChange={handleTimeoutChange}
         themeId={themeId}
         onThemeChange={handleThemeChange}
+        shortcut={shortcut}
+        onShortcutChange={handleShortcutChange}
       />
     </>
   );

@@ -13,9 +13,11 @@ interface Props {
   onTimeoutChange: (ms: number) => void;
   themeId: string;
   onThemeChange: (id: string) => void;
+  shortcut: string;
+  onShortcutChange: (s: string) => void;
 }
 
-export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, themeId, onThemeChange }: Props) {
+export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, themeId, onThemeChange, shortcut, onShortcutChange }: Props) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [selected, setSelected] = useState<Entry | null>(null);
@@ -160,6 +162,8 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
           onTimeoutChange={onTimeoutChange}
           autostart={autostart}
           onAutostartChange={setAutostart}
+          shortcut={shortcut}
+          onShortcutChange={onShortcutChange}
           onImported={() => { setShowSettings(false); onLocked(); }}
           onClose={() => setShowSettings(false)}
         />
