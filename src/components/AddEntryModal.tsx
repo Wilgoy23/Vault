@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { X, ShieldCheck } from "lucide-react";
 import { addEntry } from "../api";
 import { Entry, Folder } from "../types";
 import PasswordInput from "./PasswordInput";
@@ -13,13 +14,14 @@ interface Props {
 export default function AddEntryModal({ folders, defaultFolderId, onAdded, onClose }: Props) {
   const [form, setForm] = useState({
     name: "", username: "", email: "", password: "", url: "", notes: "",
-    folder_id: defaultFolderId ?? "",
+    folder_id: defaultFolderId ?? "", totp_secret: "",
   });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const set = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
-    setForm({ ...form, [key]: e.target.value });
+  const set = (key: keyof typeof form) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
+      setForm({ ...form, [key]: e.target.value });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,6 +40,7 @@ export default function AddEntryModal({ folders, defaultFolderId, onAdded, onClo
         url: form.url || undefined,
         notes: form.notes || undefined,
         folder_id: form.folder_id || undefined,
+        totp_secret: form.totp_secret || undefined,
       });
       onAdded(entry);
     } catch (err: any) {
@@ -47,48 +50,94 @@ export default function AddEntryModal({ folders, defaultFolderId, onAdded, onClo
     }
   };
 
+  const labelStyle: React.CSSProperties = {
+    color: "var(--muted)", fontSize: "11px", fontWeight: 600,
+    textTransform: "uppercase", letterSpacing: "0.06em",
+    marginBottom: "4px", display: "block",
+  };
+
   return (
-    <div style={{
-      position: "fixed", inset: 0, background: "rgba(3,8,20,0.65)",
-      backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)",
-      display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100,
-    }}>
+    <div
+      style={{
+        position: "fixed", inset: 0, background: "rgba(3,8,20,0.65)",
+        backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)",
+        display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100,
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
       <div className="glass" style={{
-        borderRadius: "var(--radius-lg)", padding: "32px", width: "400px",
+        borderRadius: "var(--radius-lg)", padding: "0", width: "420px",
         boxShadow: "0 8px 48px rgba(0,0,0,0.5), 0 0 60px rgba(30,80,200,0.10)",
+        display: "flex", flexDirection: "column", maxHeight: "90vh",
       }}>
-        <h2 style={{ fontSize: "17px", fontWeight: 600, marginBottom: "20px" }}>Add entry</h2>
-        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-          <input placeholder="Name  (e.g. GitHub)" value={form.name} onChange={set("name")} autoFocus />
-          <input placeholder="Username (optional)" value={form.username} onChange={set("username")} />
-          <input placeholder="Email" type="email" value={form.email} onChange={set("email")} />
-          <PasswordInput value={form.password} onChange={(v) => setForm({ ...form, password: v })} />
-          <input placeholder="URL (optional)" value={form.url} onChange={set("url")} />
-          <textarea
-            placeholder="Notes (optional)"
-            value={form.notes}
-            onChange={set("notes")}
-            rows={3}
-            style={{ resize: "vertical" }}
-          />
+        {/* Header */}
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "18px 20px 14px",
+          borderBottom: "1px solid var(--border)",
+          flexShrink: 0,
+        }}>
+          <span style={{ fontWeight: 600, fontSize: "15px" }}>Add entry</span>
+          <button className="btn-icon" onClick={onClose} style={{ width: "28px", height: "28px" }}>
+            <X size={14} strokeWidth={2} />
+          </button>
+        </div>
+
+        {/* Form body */}
+        <form
+          onSubmit={handleSubmit}
+          style={{ display: "flex", flexDirection: "column", gap: "14px", padding: "18px 20px 20px", overflowY: "auto" }}
+        >
+          <div>
+            <label style={labelStyle}>Name</label>
+            <input placeholder="e.g. GitHub" value={form.name} onChange={set("name")} autoFocus />
+          </div>
+          <div>
+            <label style={labelStyle}>Username <span style={{ opacity: 0.5, fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>(optional)</span></label>
+            <input placeholder="Username" value={form.username} onChange={set("username")} />
+          </div>
+          <div>
+            <label style={labelStyle}>Email</label>
+            <input placeholder="email@example.com" type="email" value={form.email} onChange={set("email")} />
+          </div>
+          <div>
+            <label style={labelStyle}>Password</label>
+            <PasswordInput value={form.password} onChange={(v) => setForm({ ...form, password: v })} />
+          </div>
+          <div>
+            <label style={labelStyle}>URL <span style={{ opacity: 0.5, fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>(optional)</span></label>
+            <input placeholder="https://…" value={form.url} onChange={set("url")} />
+          </div>
+          <div>
+            <label style={labelStyle}>Notes <span style={{ opacity: 0.5, fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>(optional)</span></label>
+            <textarea placeholder="Notes…" value={form.notes} onChange={set("notes")} rows={2} style={{ resize: "vertical" }} />
+          </div>
+          <div>
+            <label style={labelStyle}>
+              <ShieldCheck size={11} strokeWidth={2.5} style={{ display: "inline", verticalAlign: "middle", marginRight: "4px" }} />
+              2FA secret <span style={{ opacity: 0.5, fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>(optional)</span>
+            </label>
+            <input
+              placeholder="Base32 TOTP secret"
+              value={form.totp_secret}
+              onChange={set("totp_secret")}
+              style={{ fontFamily: "var(--mono)", fontSize: "12.5px", letterSpacing: "0.05em" }}
+            />
+          </div>
           {folders.length > 0 && (
-            <select
-              value={form.folder_id}
-              onChange={set("folder_id")}
-              style={{
-                background: "rgba(255,255,255,0.06)", color: "var(--text)",
-                border: "1px solid var(--border)",
-                borderRadius: "var(--radius)", padding: "8px 10px", fontSize: "13px",
-              }}
-            >
-              <option value="">No folder</option>
-              {folders.map((f) => (
-                <option key={f.id} value={f.id}>{f.name}</option>
-              ))}
-            </select>
+            <div>
+              <label style={labelStyle}>Folder</label>
+              <select
+                value={form.folder_id}
+                onChange={set("folder_id")}
+              >
+                <option value="">No folder</option>
+                {folders.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+              </select>
+            </div>
           )}
           {error && <p className="error">{error}</p>}
-          <div style={{ display: "flex", gap: "8px", marginTop: "4px" }}>
+          <div style={{ display: "flex", gap: "8px", marginTop: "2px" }}>
             <button type="button" className="btn-ghost" onClick={onClose} style={{ flex: 1 }}>Cancel</button>
             <button type="submit" className="btn-primary" disabled={loading} style={{ flex: 1 }}>
               {loading ? "Saving…" : "Add entry"}

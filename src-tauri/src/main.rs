@@ -11,8 +11,69 @@ use tauri::{
     Manager, State,
 };
 use tauri_plugin_autostart::ManagerExt;
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState as SCState};
 use vault::{Entry, Folder, VaultData};
+
+const DEFAULT_SHORTCUT: &str = "Ctrl+Shift+P";
+const SHORTCUT_FILE: &str = "shortcut.conf";
+
+struct OverlayShortcut(Mutex<String>);
+
+fn str_to_code(s: &str) -> Option<Code> {
+    match s.to_lowercase().as_str() {
+        "a" => Some(Code::KeyA), "b" => Some(Code::KeyB), "c" => Some(Code::KeyC),
+        "d" => Some(Code::KeyD), "e" => Some(Code::KeyE), "f" => Some(Code::KeyF),
+        "g" => Some(Code::KeyG), "h" => Some(Code::KeyH), "i" => Some(Code::KeyI),
+        "j" => Some(Code::KeyJ), "k" => Some(Code::KeyK), "l" => Some(Code::KeyL),
+        "m" => Some(Code::KeyM), "n" => Some(Code::KeyN), "o" => Some(Code::KeyO),
+        "p" => Some(Code::KeyP), "q" => Some(Code::KeyQ), "r" => Some(Code::KeyR),
+        "s" => Some(Code::KeyS), "t" => Some(Code::KeyT), "u" => Some(Code::KeyU),
+        "v" => Some(Code::KeyV), "w" => Some(Code::KeyW), "x" => Some(Code::KeyX),
+        "y" => Some(Code::KeyY), "z" => Some(Code::KeyZ),
+        "0" => Some(Code::Digit0), "1" => Some(Code::Digit1), "2" => Some(Code::Digit2),
+        "3" => Some(Code::Digit3), "4" => Some(Code::Digit4), "5" => Some(Code::Digit5),
+        "6" => Some(Code::Digit6), "7" => Some(Code::Digit7), "8" => Some(Code::Digit8),
+        "9" => Some(Code::Digit9),
+        "f1"  => Some(Code::F1),  "f2"  => Some(Code::F2),  "f3"  => Some(Code::F3),
+        "f4"  => Some(Code::F4),  "f5"  => Some(Code::F5),  "f6"  => Some(Code::F6),
+        "f7"  => Some(Code::F7),  "f8"  => Some(Code::F8),  "f9"  => Some(Code::F9),
+        "f10" => Some(Code::F10), "f11" => Some(Code::F11), "f12" => Some(Code::F12),
+        "space" => Some(Code::Space), "enter" => Some(Code::Enter),
+        "escape" | "esc" => Some(Code::Escape), "tab" => Some(Code::Tab),
+        "backspace" => Some(Code::Backspace), "delete" | "del" => Some(Code::Delete),
+        "insert" | "ins" => Some(Code::Insert), "home" => Some(Code::Home),
+        "end" => Some(Code::End), "pageup" => Some(Code::PageUp),
+        "pagedown" => Some(Code::PageDown),
+        _ => None,
+    }
+}
+
+fn parse_shortcut_str(s: &str) -> Option<Shortcut> {
+    let parts: Vec<&str> = s.split('+').collect();
+    let mut mods = Modifiers::empty();
+    let mut code: Option<Code> = None;
+    for part in &parts {
+        match part.to_lowercase().as_str() {
+            "ctrl" | "control" => mods |= Modifiers::CONTROL,
+            "shift"            => mods |= Modifiers::SHIFT,
+            "alt"              => mods |= Modifiers::ALT,
+            "meta" | "win" | "cmd" | "super" => mods |= Modifiers::META,
+            key => { code = str_to_code(key); }
+        }
+    }
+    code.map(|c| Shortcut::new(if mods.is_empty() { None } else { Some(mods) }, c))
+}
+
+fn toggle_overlay(app: &tauri::AppHandle) {
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        if overlay.is_visible().unwrap_or(false) {
+            let _ = overlay.hide();
+        } else {
+            let _ = overlay.show();
+            let _ = overlay.set_focus();
+        }
+    }
+}
 
 /// The session state held in memory while the vault is unlocked.
 /// Both fields are None when locked.
@@ -91,12 +152,13 @@ fn add_entry(
     url: Option<String>,
     notes: Option<String>,
     folder_id: Option<String>,
+    totp_secret: Option<String>,
     state: State<VaultState>,
 ) -> Result<Entry, String> {
     let mut s = state.lock().unwrap();
     let key = s.key.ok_or("Vault is locked")?;
     let data = s.data.as_mut().ok_or("Vault is locked")?;
-    vault::add_entry(&key, data, name, username, email, password, url, notes, folder_id)
+    vault::add_entry(&key, data, name, username, email, password, url, notes, folder_id, totp_secret)
 }
 
 #[tauri::command]
@@ -109,12 +171,13 @@ fn update_entry(
     url: Option<String>,
     notes: Option<String>,
     folder_id: Option<String>,
+    totp_secret: Option<String>,
     state: State<VaultState>,
 ) -> Result<(), String> {
     let mut s = state.lock().unwrap();
     let key = s.key.ok_or("Vault is locked")?;
     let data = s.data.as_mut().ok_or("Vault is locked")?;
-    vault::update_entry(&key, data, &id, name, username, email, password, url, notes, folder_id)
+    vault::update_entry(&key, data, &id, name, username, email, password, url, notes, folder_id, totp_secret)
 }
 
 #[tauri::command]
@@ -194,6 +257,57 @@ fn is_autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
     app.autolaunch().is_enabled().map_err(|e| e.to_string())
 }
 
+// ── Clipboard ─────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn clear_clipboard() {
+    if let Ok(mut cb) = arboard::Clipboard::new() {
+        let _ = cb.clear();
+    }
+}
+
+// ── Overlay shortcut commands ─────────────────────────────────────────────────
+
+#[tauri::command]
+fn get_overlay_shortcut(shortcut_state: State<OverlayShortcut>) -> String {
+    shortcut_state.0.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn set_overlay_shortcut(
+    app: tauri::AppHandle,
+    shortcut_str: String,
+    shortcut_state: State<OverlayShortcut>,
+) -> Result<(), String> {
+    let new_sc = parse_shortcut_str(&shortcut_str)
+        .ok_or_else(|| format!("Invalid shortcut: {shortcut_str}"))?;
+
+    // Unregister the current shortcut
+    let old_str = shortcut_state.0.lock().unwrap().clone();
+    if let Some(old_sc) = parse_shortcut_str(&old_str) {
+        let _ = app.global_shortcut().unregister(old_sc);
+    }
+
+    // Register the new shortcut with the same toggle handler
+    let app_handle = app.clone();
+    app.global_shortcut()
+        .on_shortcut(new_sc, move |_app, _sc, event| {
+            if event.state() == SCState::Pressed {
+                toggle_overlay(&app_handle);
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    *shortcut_state.0.lock().unwrap() = shortcut_str.clone();
+
+    // Persist to config file
+    if let Ok(data_dir) = app.path().app_data_dir() {
+        let _ = std::fs::write(data_dir.join(SHORTCUT_FILE), &shortcut_str);
+    }
+
+    Ok(())
+}
+
 // ── App entry point ───────────────────────────────────────────────────────────
 
 fn main() {
@@ -205,6 +319,7 @@ fn main() {
         ))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(Mutex::new(AppState::locked()))
+        .manage(OverlayShortcut(Mutex::new(DEFAULT_SHORTCUT.to_string())))
         .invoke_handler(tauri::generate_handler![
             vault_exists,
             create_vault,
@@ -224,24 +339,33 @@ fn main() {
             enable_autostart,
             disable_autostart,
             is_autostart_enabled,
+            get_overlay_shortcut,
+            set_overlay_shortcut,
+            clear_clipboard,
         ])
         .setup(|app| {
             // ── Global hotkey ──────────────────────────────────────────────
-            let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyP);
+            // Load persisted shortcut or fall back to default
+            let shortcut_str = app
+                .path()
+                .app_data_dir()
+                .ok()
+                .and_then(|d| std::fs::read_to_string(d.join(SHORTCUT_FILE)).ok())
+                .unwrap_or_else(|| DEFAULT_SHORTCUT.to_string());
+
+            // Update managed state to match what we'll actually register
+            *app.state::<OverlayShortcut>().0.lock().unwrap() = shortcut_str.clone();
+
+            let shortcut = parse_shortcut_str(&shortcut_str)
+                .unwrap_or_else(|| Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyP));
 
             let app_handle = app.handle().clone();
             app.global_shortcut()
                 .on_shortcut(shortcut, move |_app, _shortcut, event| {
                     // Only act on key press, not key release — prevents the toggle
                     // firing twice on Windows (once down, once up)
-                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        let overlay = app_handle.get_webview_window("overlay").unwrap();
-                        if overlay.is_visible().unwrap_or(false) {
-                            let _ = overlay.hide();
-                        } else {
-                            let _ = overlay.show();
-                            let _ = overlay.set_focus();
-                        }
+                    if event.state() == SCState::Pressed {
+                        toggle_overlay(&app_handle);
                     }
                 })?;
 
