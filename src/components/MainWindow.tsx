@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Lock, Settings } from "lucide-react";
 import { listEntries, listFolders, lock, isAutostartEnabled, addFolder, renameFolder, deleteFolder } from "../api";
 import { Entry, Folder } from "../types";
@@ -26,6 +26,54 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
   const [showAdd, setShowAdd] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [autostart, setAutostart] = useState(false);
+  const [editTrigger, setEditTrigger] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const filteredEntries = useMemo(() => {
+    const q = search.toLowerCase();
+    return entries.filter(e =>
+      (e.name.toLowerCase().includes(q) || e.email.toLowerCase().includes(q)) &&
+      (activeFolder === null || e.folder_id === activeFolder)
+    );
+  }, [entries, search, activeFolder]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (showAdd || showSettings) return;
+      const target = e.target as HTMLElement;
+      const inInput = target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT";
+
+      if (e.ctrlKey && e.key === "f") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+      if (inInput) return;
+
+      if (e.key === "/" ) { e.preventDefault(); searchInputRef.current?.focus(); return; }
+      if (e.key === "e" && selected) { setEditTrigger(t => t + 1); return; }
+
+      if (e.key === "j" || e.key === "ArrowDown") {
+        e.preventDefault();
+        if (filteredEntries.length === 0) return;
+        const idx = selected ? filteredEntries.findIndex(e => e.id === selected.id) : -1;
+        const next = filteredEntries[Math.min(idx + 1, filteredEntries.length - 1)];
+        if (next) setSelected(next);
+        return;
+      }
+      if (e.key === "k" || e.key === "ArrowUp") {
+        e.preventDefault();
+        if (filteredEntries.length === 0) return;
+        const idx = selected ? filteredEntries.findIndex(e => e.id === selected.id) : filteredEntries.length;
+        const prev = filteredEntries[Math.max(idx - 1, 0)];
+        if (prev) setSelected(prev);
+        return;
+      }
+      if (e.key === "Escape" && selected) { setSelected(null); return; }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [filteredEntries, selected, showAdd, showSettings]);
 
   useEffect(() => {
     listEntries().then(setEntries);
@@ -129,10 +177,11 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
           onSelect={setSelected}
           search={search}
           onSearchChange={setSearch}
+          searchInputRef={searchInputRef}
         />
         <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
           {selected
-            ? <EntryDetail entry={selected} folders={folders} onUpdated={handleUpdated} onDeleted={handleDeleted} />
+            ? <EntryDetail entry={selected} folders={folders} onUpdated={handleUpdated} onDeleted={handleDeleted} editTrigger={editTrigger} />
             : (
               <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "10px" }}>
                 <div style={{ color: "var(--muted)", opacity: 0.25, fontSize: "48px" }}>🔐</div>

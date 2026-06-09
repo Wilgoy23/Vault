@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, RefObject } from "react";
 import { Folder, FolderOpen, Plus } from "lucide-react";
 import { Entry, Folder as FolderType } from "../types";
 
@@ -24,12 +24,13 @@ interface Props {
   onSelect: (entry: Entry) => void;
   search: string;
   onSearchChange: (v: string) => void;
+  searchInputRef?: RefObject<HTMLInputElement | null>;
 }
 
 export default function EntryList({
   entries, folders, activeFolder, onFolderChange,
   onFolderAdded, onFolderRenamed, onFolderDeleted,
-  selectedId, onSelect, search, onSearchChange,
+  selectedId, onSelect, search, onSearchChange, searchInputRef,
 }: Props) {
   const [newFolderMode, setNewFolderMode] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
@@ -210,6 +211,7 @@ export default function EntryList({
             <path d="M8.75 8.75L11.25 11.25" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
           </svg>
           <input
+            ref={searchInputRef}
             placeholder="Search entries…"
             value={search}
             onChange={(e) => onSearchChange(e.target.value)}
