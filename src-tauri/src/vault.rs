@@ -26,6 +26,8 @@ pub struct Entry {
     pub notes: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub totp_secret: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -148,6 +150,7 @@ pub fn add_entry(
     url: Option<String>,
     notes: Option<String>,
     folder_id: Option<String>,
+    totp_secret: Option<String>,
 ) -> Result<Entry, String> {
     let now = now_secs();
     let entry = Entry {
@@ -159,6 +162,7 @@ pub fn add_entry(
         url,
         notes,
         folder_id,
+        totp_secret,
         created_at: now,
         updated_at: now,
     };
@@ -179,6 +183,7 @@ pub fn update_entry(
     url: Option<String>,
     notes: Option<String>,
     folder_id: Option<String>,
+    totp_secret: Option<String>,
 ) -> Result<(), String> {
     let entry = data
         .entries
@@ -193,6 +198,7 @@ pub fn update_entry(
     entry.url = url;
     entry.notes = notes;
     entry.folder_id = folder_id;
+    entry.totp_secret = totp_secret;
     entry.updated_at = now_secs();
 
     save_vault(key, data)
@@ -354,6 +360,7 @@ mod tests {
             url: Some("github.com".into()),
             notes: None,
             folder_id: None,
+            totp_secret: None,
             created_at: now_secs(),
             updated_at: now_secs(),
         };
@@ -382,6 +389,7 @@ mod tests {
             url: None,
             notes: None,
             folder_id: None,
+            totp_secret: None,
             created_at: now_secs(),
             updated_at: now_secs(),
         });
@@ -410,6 +418,7 @@ mod tests {
             url: None,
             notes: None,
             folder_id: None,
+            totp_secret: None,
             created_at: now_secs(),
             updated_at: now_secs(),
         });
@@ -476,6 +485,7 @@ mod tests {
                 url: None,
                 notes: None,
                 folder_id: None,
+                totp_secret: None,
                 created_at: now_secs(),
                 updated_at: now_secs(),
             }],
@@ -506,6 +516,7 @@ mod tests {
                 url: None,
                 notes: None,
                 folder_id: None,
+                totp_secret: None,
                 created_at: now_secs(),
                 updated_at: now_secs(),
             });

@@ -152,12 +152,13 @@ fn add_entry(
     url: Option<String>,
     notes: Option<String>,
     folder_id: Option<String>,
+    totp_secret: Option<String>,
     state: State<VaultState>,
 ) -> Result<Entry, String> {
     let mut s = state.lock().unwrap();
     let key = s.key.ok_or("Vault is locked")?;
     let data = s.data.as_mut().ok_or("Vault is locked")?;
-    vault::add_entry(&key, data, name, username, email, password, url, notes, folder_id)
+    vault::add_entry(&key, data, name, username, email, password, url, notes, folder_id, totp_secret)
 }
 
 #[tauri::command]
@@ -170,12 +171,13 @@ fn update_entry(
     url: Option<String>,
     notes: Option<String>,
     folder_id: Option<String>,
+    totp_secret: Option<String>,
     state: State<VaultState>,
 ) -> Result<(), String> {
     let mut s = state.lock().unwrap();
     let key = s.key.ok_or("Vault is locked")?;
     let data = s.data.as_mut().ok_or("Vault is locked")?;
-    vault::update_entry(&key, data, &id, name, username, email, password, url, notes, folder_id)
+    vault::update_entry(&key, data, &id, name, username, email, password, url, notes, folder_id, totp_secret)
 }
 
 #[tauri::command]
@@ -255,6 +257,15 @@ fn is_autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
     app.autolaunch().is_enabled().map_err(|e| e.to_string())
 }
 
+// ── Clipboard ─────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn clear_clipboard() {
+    if let Ok(mut cb) = arboard::Clipboard::new() {
+        let _ = cb.clear();
+    }
+}
+
 // ── Overlay shortcut commands ─────────────────────────────────────────────────
 
 #[tauri::command]
@@ -330,6 +341,7 @@ fn main() {
             is_autostart_enabled,
             get_overlay_shortcut,
             set_overlay_shortcut,
+            clear_clipboard,
         ])
         .setup(|app| {
             // ── Global hotkey ──────────────────────────────────────────────

@@ -12,6 +12,7 @@ export interface Entry {
   url?: string;
   notes?: string;
   folder_id?: string;
+  totp_secret?: string;
   created_at: number;
   updated_at: number;
 }

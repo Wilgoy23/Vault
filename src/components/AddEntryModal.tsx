@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { X } from "lucide-react";
+import { X, ShieldCheck } from "lucide-react";
 import { addEntry } from "../api";
 import { Entry, Folder } from "../types";
 import PasswordInput from "./PasswordInput";
@@ -14,7 +14,7 @@ interface Props {
 export default function AddEntryModal({ folders, defaultFolderId, onAdded, onClose }: Props) {
   const [form, setForm] = useState({
     name: "", username: "", email: "", password: "", url: "", notes: "",
-    folder_id: defaultFolderId ?? "",
+    folder_id: defaultFolderId ?? "", totp_secret: "",
   });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -40,6 +40,7 @@ export default function AddEntryModal({ folders, defaultFolderId, onAdded, onClo
         url: form.url || undefined,
         notes: form.notes || undefined,
         folder_id: form.folder_id || undefined,
+        totp_secret: form.totp_secret || undefined,
       });
       onAdded(entry);
     } catch (err: any) {
@@ -110,6 +111,18 @@ export default function AddEntryModal({ folders, defaultFolderId, onAdded, onClo
           <div>
             <label style={labelStyle}>Notes <span style={{ opacity: 0.5, fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>(optional)</span></label>
             <textarea placeholder="Notes…" value={form.notes} onChange={set("notes")} rows={2} style={{ resize: "vertical" }} />
+          </div>
+          <div>
+            <label style={labelStyle}>
+              <ShieldCheck size={11} strokeWidth={2.5} style={{ display: "inline", verticalAlign: "middle", marginRight: "4px" }} />
+              2FA secret <span style={{ opacity: 0.5, fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>(optional)</span>
+            </label>
+            <input
+              placeholder="Base32 TOTP secret"
+              value={form.totp_secret}
+              onChange={set("totp_secret")}
+              style={{ fontFamily: "var(--mono)", fontSize: "12.5px", letterSpacing: "0.05em" }}
+            />
           </div>
           {folders.length > 0 && (
             <div>
