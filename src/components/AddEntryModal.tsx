@@ -39,8 +39,8 @@ export default function AddEntryModal({ folders, defaultFolderId, onAdded, onClo
         password: form.password,
         url: form.url || undefined,
         notes: form.notes || undefined,
-        folder_id: form.folder_id || undefined,
-        totp_secret: form.totp_secret || undefined,
+        folderId: form.folder_id || undefined,
+        totpSecret: form.totp_secret || undefined,
       });
       onAdded(entry);
     } catch (err: any) {

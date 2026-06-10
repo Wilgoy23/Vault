@@ -200,8 +200,8 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
         password: form.password,
         url: form.url || undefined,
         notes: form.notes || undefined,
-        folder_id: form.folder_id || undefined,
-        totp_secret: form.totp_secret || undefined,
+        folderId: form.folder_id || undefined,
+        totpSecret: form.totp_secret || undefined,
       });
       onUpdated({ ...form, updated_at: Date.now() / 1000 });
       setEditing(false);

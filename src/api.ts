@@ -27,8 +27,8 @@ export const addEntry = (payload: {
   password: string;
   url?: string;
   notes?: string;
-  folder_id?: string;
-  totp_secret?: string;
+  folderId?: string;
+  totpSecret?: string;
 }) => invoke<Entry>("add_entry", payload);
 
 export const updateEntry = (payload: {
@@ -39,8 +39,8 @@ export const updateEntry = (payload: {
   password: string;
   url?: string;
   notes?: string;
-  folder_id?: string;
-  totp_secret?: string;
+  folderId?: string;
+  totpSecret?: string;
 }) => invoke<void>("update_entry", payload);
 
 export const listFolders = () =>

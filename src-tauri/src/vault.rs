@@ -437,6 +437,65 @@ mod tests {
     }
 
     #[test]
+    fn totp_secret_persists_roundtrip() {
+        let dir = setup_temp_vault("totp_secret_roundtrip");
+        create_vault_at(&dir, "password");
+        let (key, mut data) = unlock_vault_at(&dir, "password");
+
+        let id = uuid::Uuid::new_v4().to_string();
+        data.entries.push(Entry {
+            id: id.clone(),
+            name: "GitHub 2FA".into(),
+            username: None,
+            email: "user@example.com".into(),
+            password: "pass".into(),
+            url: None,
+            notes: None,
+            folder_id: None,
+            totp_secret: Some("JBSWY3DPEHPK3PXP".into()),
+            created_at: now_secs(),
+            updated_at: now_secs(),
+        });
+        save_vault_at(&dir, &key, &data);
+
+        let (_key2, data2) = unlock_vault_at(&dir, "password");
+        assert_eq!(data2.entries.len(), 1);
+        assert_eq!(data2.entries[0].totp_secret, Some("JBSWY3DPEHPK3PXP".into()));
+    }
+
+    #[test]
+    fn totp_secret_update_persists() {
+        let dir = setup_temp_vault("totp_secret_update");
+        create_vault_at(&dir, "password");
+        let (key, mut data) = unlock_vault_at(&dir, "password");
+
+        let id = uuid::Uuid::new_v4().to_string();
+        data.entries.push(Entry {
+            id: id.clone(),
+            name: "Service".into(),
+            username: None,
+            email: "user@example.com".into(),
+            password: "pass".into(),
+            url: None,
+            notes: None,
+            folder_id: None,
+            totp_secret: None,
+            created_at: now_secs(),
+            updated_at: now_secs(),
+        });
+        save_vault_at(&dir, &key, &data);
+
+        // Now update the entry to add a TOTP secret
+        if let Some(e) = data.entries.iter_mut().find(|e| e.id == id) {
+            e.totp_secret = Some("JBSWY3DPEHPK3PXP".into());
+        }
+        save_vault_at(&dir, &key, &data);
+
+        let (_key2, data2) = unlock_vault_at(&dir, "password");
+        assert_eq!(data2.entries[0].totp_secret, Some("JBSWY3DPEHPK3PXP".into()));
+    }
+
+    #[test]
     fn export_fails_when_no_vault_exists() {
         // vault_path() won't exist in a fresh temp env — export should report it
         let dest = env::temp_dir().join("vault_tests").join("export_no_vault_dest.enc");
