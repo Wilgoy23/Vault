@@ -29,13 +29,19 @@ A local, end-to-end encrypted password manager built with Tauri 2, React, and Ru
 
 ## Screenshots
 
+### Lock Screen
+![Locked](images/lock-screen.png)
+
 ### Main Window
-![Vault locked](images/Vault.png)
-![Vault unlocked](images/OpenedVault.png)
+![Entry list](images/main-window.png)
+![Entry detail with 2FA](images/entry-detail.png)
+
+### Settings
+![Settings](images/settings.png)
 
 ### Quick-Access Overlay
-![Overlay](images/overlay.png)
-![Overlay with results](images/OpenedOverlay.png)
+![Overlay search results](images/overlay-search.png)
+![Overlay entry detail](images/overlay-detail.png)
 
 ---
 
