@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit } from "@tauri-apps/api/event";
 import { Eye, EyeOff, ArrowLeft } from "lucide-react";
-import { isUnlocked, listEntries, unlock, clearClipboard } from "./api";
+import { isUnlocked, listEntries, unlock, writeClipboardText, scheduleClipboardClear } from "./api";
 import { Entry } from "./types";
 import { generateTOTP, totpSecondsLeft } from "./utils/totp";
 import { applyTheme, DEFAULT_THEME_ID } from "./themes";
@@ -23,9 +23,15 @@ function useCopy() {
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const copy = async (key: string, value: string) => {
-    await navigator.clipboard.writeText(value);
+    await writeClipboardText(value);
     setCopied(key);
     setTimeout(() => setCopied(null), 1500);
+
+    // The actual clear is handled by the Rust backend on a background
+    // thread, so it still fires even if this window is hidden/unfocused
+    // and the JS countdown below gets throttled.
+    scheduleClipboardClear(30).catch(() => {});
+
     if (timer.current) clearInterval(timer.current);
     setCountdown(30);
     timer.current = setInterval(() => {
@@ -33,7 +39,6 @@ function useCopy() {
         if (prev === null || prev <= 1) {
           clearInterval(timer.current!);
           timer.current = null;
-          clearClipboard().catch(() => {});
           return null;
         }
         return prev - 1;

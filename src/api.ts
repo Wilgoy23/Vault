@@ -27,8 +27,8 @@ export const addEntry = (payload: {
   password: string;
   url?: string;
   notes?: string;
-  folder_id?: string;
-  totp_secret?: string;
+  folderId?: string;
+  totpSecret?: string;
 }) => invoke<Entry>("add_entry", payload);
 
 export const updateEntry = (payload: {
@@ -39,8 +39,8 @@ export const updateEntry = (payload: {
   password: string;
   url?: string;
   notes?: string;
-  folder_id?: string;
-  totp_secret?: string;
+  folderId?: string;
+  totpSecret?: string;
 }) => invoke<void>("update_entry", payload);
 
 export const listFolders = () =>
@@ -88,8 +88,11 @@ export const disableAutostart = () =>
 export const isAutostartEnabled = () =>
   invoke<boolean>("is_autostart_enabled");
 
-export const clearClipboard = () =>
-  invoke<void>("clear_clipboard");
+export const writeClipboardText = (text: string) =>
+  invoke<void>("write_clipboard_text", { text });
+
+export const scheduleClipboardClear = (seconds: number) =>
+  invoke<void>("schedule_clipboard_clear", { seconds });
 
 export const getOverlayShortcut = () =>
   invoke<string>("get_overlay_shortcut");

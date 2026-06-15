@@ -66,6 +66,19 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Resolve version from tag
+        shell: bash
+        run: |
+          TAG="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}"
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Set app version
+        shell: bash
+        run: |
+          jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > src-tauri/tauri.conf.json.tmp
+          mv src-tauri/tauri.conf.json.tmp src-tauri/tauri.conf.json
+          sed -i "0,/^version = /s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
+
       - name: Build
         uses: tauri-apps/tauri-action@v0
         env:

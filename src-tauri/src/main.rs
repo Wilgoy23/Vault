@@ -259,11 +259,53 @@ fn is_autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
 
 // ── Clipboard ─────────────────────────────────────────────────────────────────
 
+struct ClipboardClearGen(Mutex<u64>);
+
+/// Writes text to the clipboard via arboard (instead of the webview's
+/// `navigator.clipboard`), so we can mark sensitive values as excluded
+/// from Windows' clipboard history and cloud clipboard sync. Without this,
+/// copied secrets keep showing up in Win+V even after `clear()` runs.
 #[tauri::command]
-fn clear_clipboard() {
-    if let Ok(mut cb) = arboard::Clipboard::new() {
-        let _ = cb.clear();
+fn write_clipboard_text(text: String) -> Result<(), String> {
+    let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "windows")]
+    {
+        use arboard::SetExtWindows;
+        cb.set().exclude_from_monitoring().text(text).map_err(|e| e.to_string())?;
     }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        cb.set_text(text).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+/// Clears the clipboard after `seconds`, unless a newer copy has been made
+/// in the meantime. Runs on a background thread so it fires reliably even
+/// when the window is hidden/unfocused and JS timers get throttled.
+#[tauri::command]
+fn schedule_clipboard_clear(app: tauri::AppHandle, state: State<ClipboardClearGen>, seconds: u64) {
+    let my_gen = {
+        let mut gen = state.0.lock().unwrap();
+        *gen += 1;
+        *gen
+    };
+
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(seconds));
+
+        let gen_state = app.state::<ClipboardClearGen>();
+        if *gen_state.0.lock().unwrap() != my_gen {
+            return;
+        }
+
+        if let Ok(mut cb) = arboard::Clipboard::new() {
+            let _ = cb.clear();
+        }
+    });
 }
 
 // ── Overlay shortcut commands ─────────────────────────────────────────────────
@@ -320,6 +362,7 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(Mutex::new(AppState::locked()))
         .manage(OverlayShortcut(Mutex::new(DEFAULT_SHORTCUT.to_string())))
+        .manage(ClipboardClearGen(Mutex::new(0)))
         .invoke_handler(tauri::generate_handler![
             vault_exists,
             create_vault,
@@ -341,7 +384,8 @@ fn main() {
             is_autostart_enabled,
             get_overlay_shortcut,
             set_overlay_shortcut,
-            clear_clipboard,
+            write_clipboard_text,
+            schedule_clipboard_clear,
         ])
         .setup(|app| {
             // ── Global hotkey ──────────────────────────────────────────────

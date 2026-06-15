@@ -13,24 +13,35 @@ A local, end-to-end encrypted password manager built with Tauri 2, React, and Ru
 - **AES-256-GCM encryption** — every vault is encrypted at rest with an authenticated cipher; nothing is ever stored in plaintext
 - **Argon2id key derivation** — master password is stretched with Argon2id before use, making brute-force attacks expensive
 - **Secure key wiping** — the decryption key is zeroed from memory on lock via the `zeroize` crate
-- **System tray** — lives in the background; left-click or use the tray menu to open, lock, or quit
-- **Quick-access overlay** — press `Ctrl+Shift+P` anywhere to open a floating search window; arrow keys to navigate, `Enter` to copy password, `Tab` to copy email
+- **TOTP / 2FA codes** — store a base32 TOTP secret per entry; live 6-digit codes with a countdown timer are shown in the detail view and inline in the overlay search list
+- **System tray** — lives in the background; use the tray menu to open, lock, or quit
+- **Quick-access overlay** — press a configurable global shortcut (default `Ctrl+Shift+P`) to open a floating search window; select an entry to view all fields and copy with keyboard shortcuts
+- **Configurable overlay shortcut** — change the global keybind in Settings → Shortcuts; persisted across restarts
 - **Auto-lock** — configurable inactivity timeout (1 min to 1 hour, or never)
-- **Clipboard auto-clear** — copied secrets are wiped from the clipboard after 30 seconds
+- **Clipboard auto-clear** — copied secrets are wiped from the clipboard after 30 seconds via a system-level clear (no blank history entry added)
+- **Folders** — organise entries into folders with rename and delete support
+- **Themes** — multiple colour themes switchable from Settings
 - **Autostart** — optional launch on system boot
-- **Fully local** — no cloud, no sync, no telemetry;
+- **Import / Export** — encrypted vault backups
+- **Fully local** — no cloud, no sync, no telemetry
 
 ---
 
 ## Screenshots
 
+### Lock Screen
+![Locked](images/lock-screen.png)
+
 ### Main Window
-![Vault locked](images/Vault.png)
-![Vault unlocked](images/OpenedVault.png)
+![Entry list](images/main-window.png)
+![Entry detail with 2FA](images/entry-detail.png)
+
+### Settings
+![Settings](images/settings.png)
 
 ### Quick-Access Overlay
-![Overlay](images/overlay.png)
-![Overlay with results](images/OpenedOverlay.png)
+![Overlay search results](images/overlay-search.png)
+![Overlay entry detail](images/overlay-detail.png)
 
 ---
 
@@ -44,6 +55,7 @@ A local, end-to-end encrypted password manager built with Tauri 2, React, and Ru
 | Nonce | 12 random bytes, unique per save |
 | Storage | `Base64(nonce ‖ ciphertext)` written to disk |
 | Memory | Master key zeroed with `zeroize` on lock |
+| Clipboard | Cleared after 30 s via `arboard::Clipboard::clear()` |
 
 The vault file cannot be decrypted without the master password. There is no recovery mechanism — if you forget your master password, the data is unrecoverable.
 
@@ -60,6 +72,7 @@ The vault file cannot be decrypted without the master password. There is no reco
 - Tauri 2
 - `aes-gcm` — encryption
 - `argon2` — key derivation
+- `arboard` — system clipboard access
 - `zeroize` — secure memory wiping
 - `uuid` — entry identifiers
 - `serde_json` — vault serialization
@@ -71,11 +84,13 @@ The vault file cannot be decrypted without the master password. There is no reco
 | Field | Required |
 |---|---|
 | Name | Yes |
+| Email | Yes |
 | Password | Yes |
 | Username | No |
-| Email | Yes |
 | URL | No |
 | Notes | No |
+| 2FA secret | No |
+| Folder | No |
 
 ---
 
@@ -116,24 +131,35 @@ npm run tauri dev
 
 ## Keyboard Shortcuts
 
+### Main Window
+
 | Shortcut | Action |
 |---|---|
-| `Ctrl+Shift+P` | Toggle quick-access overlay |
-| `↑` / `↓` | Navigate overlay results |
-| `Enter` | Copy password |
-| `Tab` | Copy email |
-| `Escape` | Close overlay | (Bugged - Ctrl+Shift+P to close)
+| `Ctrl+Shift+P` | Toggle quick-access overlay (configurable) |
+| `J` / `↓` | Select next entry |
+| `K` / `↑` | Select previous entry |
+| `/` or `Ctrl+F` | Focus search |
+| `E` | Edit selected entry |
+| `Escape` | Deselect entry |
 
----
+### Overlay — Search List
 
-## Future Improvements
+| Shortcut | Action |
+|---|---|
+| `↑` / `↓` | Navigate results |
+| `Enter` | Open entry detail |
+| `Escape` | Close overlay |
 
-User Customization
-- User to be able to choose shortcut used for overlay 
-- Color Picker
+### Overlay — Entry Detail
 
-IOS/Android release
-Way to transfer existing Vault between devices
+| Shortcut | Action |
+|---|---|
+| `Enter` / `P` | Copy password |
+| `E` | Copy email |
+| `U` | Copy username |
+| `T` | Copy 2FA code |
+| `V` | Toggle password visibility |
+| `Escape` | Back to search |
 
 ---
 

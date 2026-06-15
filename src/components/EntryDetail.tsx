@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Copy, Check, Eye, EyeOff, Pencil, Trash2, X, Save, ShieldCheck } from "lucide-react";
 import { Entry, Folder } from "../types";
-import { updateEntry, deleteEntry, clearClipboard } from "../api";
+import { updateEntry, deleteEntry, writeClipboardText, scheduleClipboardClear } from "../api";
 import { generateTOTP, totpSecondsLeft } from "../utils/totp";
 import PasswordInput from "./PasswordInput";
 
@@ -38,9 +38,14 @@ function useClipboard() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const copy = async (key: string, value: string) => {
-    await navigator.clipboard.writeText(value);
+    await writeClipboardText(value);
     setCopied(key);
     setTimeout(() => setCopied(null), 1500);
+
+    // The actual clear is handled by the Rust backend on a background
+    // thread, so it still fires even if this window is hidden/unfocused
+    // and the JS countdown below gets throttled.
+    scheduleClipboardClear(30).catch(() => {});
 
     if (timerRef.current) clearInterval(timerRef.current);
     setCountdown(30);
@@ -49,7 +54,6 @@ function useClipboard() {
         if (prev === null || prev <= 1) {
           clearInterval(timerRef.current!);
           timerRef.current = null;
-          clearClipboard().catch(() => {});
           return null;
         }
         return prev - 1;
@@ -200,8 +204,8 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
         password: form.password,
         url: form.url || undefined,
         notes: form.notes || undefined,
-        folder_id: form.folder_id || undefined,
-        totp_secret: form.totp_secret || undefined,
+        folderId: form.folder_id || undefined,
+        totpSecret: form.totp_secret || undefined,
       });
       onUpdated({ ...form, updated_at: Date.now() / 1000 });
       setEditing(false);

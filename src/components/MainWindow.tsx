@@ -184,7 +184,6 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
             ? <EntryDetail entry={selected} folders={folders} onUpdated={handleUpdated} onDeleted={handleDeleted} editTrigger={editTrigger} />
             : (
               <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "10px" }}>
-                <div style={{ color: "var(--muted)", opacity: 0.25, fontSize: "48px" }}>🔐</div>
                 <p style={{ color: "var(--muted)", fontSize: "13px" }}>
                   {entries.length === 0 ? "No entries yet — add one to get started." : "Select an entry to view it."}
                 </p>
