@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { RefreshCw, Wand2 } from "lucide-react";
 import { generatePassword, GenOptions, DEFAULT_OPTIONS } from "../utils/passwordGen";
 
@@ -7,19 +8,53 @@ interface Props {
   onChange: (value: string) => void;
 }
 
+// Approx. rendered height of the generator popover; used to decide
+// whether it should open below or flip above the input.
+const POPOVER_HEIGHT = 300;
+const POPOVER_WIDTH = 300;
+
 export default function PasswordInput({ value, onChange }: Props) {
   const [open, setOpen] = useState(false);
   const [opts, setOpts] = useState<GenOptions>({ ...DEFAULT_OPTIONS });
   const [preview, setPreview] = useState("");
+  const [coords, setCoords] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const anchorRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
+
+  // Position the (portaled, fixed) popover relative to the input row,
+  // flipping above the input when there isn't room below. Rendering in a
+  // portal keeps it from being clipped by scrollable/overflow ancestors.
+  const reposition = () => {
+    const el = anchorRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const top = spaceBelow >= POPOVER_HEIGHT + 6 || spaceBelow >= rect.top
+      ? rect.bottom + 6
+      : rect.top - POPOVER_HEIGHT - 6;
+    const left = Math.max(8, rect.right - POPOVER_WIDTH);
+    setCoords({ top, left });
+  };
 
   useEffect(() => {
     if (!open) return;
+    reposition();
     const handler = (e: MouseEvent) => {
-      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (
+        popoverRef.current && !popoverRef.current.contains(target) &&
+        anchorRef.current && !anchorRef.current.contains(target)
+      ) setOpen(false);
     };
     document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    // Reposition while scrolling any ancestor (capture) or resizing.
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+    return () => {
+      document.removeEventListener("mousedown", handler);
+      window.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("resize", reposition);
+    };
   }, [open]);
 
   const refreshPreview = (o: GenOptions) => setPreview(generatePassword(o));
@@ -51,7 +86,7 @@ export default function PasswordInput({ value, onChange }: Props) {
 
   return (
     <div style={{ position: "relative" }}>
-      <div style={{ display: "flex", gap: "6px" }}>
+      <div ref={anchorRef} style={{ display: "flex", gap: "6px" }}>
         <input
           type="text"
           value={value}
@@ -70,11 +105,11 @@ export default function PasswordInput({ value, onChange }: Props) {
         </button>
       </div>
 
-      {open && (
+      {open && createPortal(
         <div
           ref={popoverRef}
           style={{
-            position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 200,
+            position: "fixed", top: coords.top, left: coords.left, zIndex: 1000,
             background: "rgba(8,18,40,0.88)",
             backdropFilter: "blur(20px) saturate(200%)",
             WebkitBackdropFilter: "blur(20px) saturate(200%)",
@@ -146,7 +181,8 @@ export default function PasswordInput({ value, onChange }: Props) {
           <button type="button" className="btn-primary" onClick={applyPassword} style={{ width: "100%", fontSize: "13px" }}>
             Use this password
           </button>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
