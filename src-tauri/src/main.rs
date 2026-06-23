@@ -354,6 +354,18 @@ fn set_overlay_shortcut(
 
 fn main() {
     tauri::Builder::default()
+        // Must be the FIRST plugin registered. When the user launches a second
+        // instance (e.g. clicking the pinned taskbar icon again), this callback
+        // fires in the already-running instance and the new process exits, so we
+        // just restore and focus the existing main window instead of opening a
+        // duplicate.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
