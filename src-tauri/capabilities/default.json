@@ -7,8 +7,6 @@
     "core:default",
     "core:window:allow-close",
     "core:window:allow-hide",
-    "dialog:allow-open",
-    "dialog:allow-save",
     "global-shortcut:default",
     "autostart:default"
   ]

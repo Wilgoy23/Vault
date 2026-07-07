@@ -45,7 +45,7 @@ export default function SettingsModal({
 
   const handleImport = async () => {
     if (!window.confirm("Importing a vault will replace your current vault and lock the app. Continue?")) return;
-    try { await importVault(); onImported(); }
+    try { if (await importVault()) onImported(); }
     catch (e) { window.alert(`Import failed: ${e}`); }
   };
 
