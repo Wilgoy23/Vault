@@ -10,7 +10,6 @@
     "dialog:allow-open",
     "dialog:allow-save",
     "global-shortcut:default",
-    "autostart:default",
-    "shell:default"
+    "autostart:default"
   ]
 }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { X, ShieldCheck } from "lucide-react";
 import { addEntry } from "../api";
 import { Entry, Folder } from "../types";
@@ -6,12 +6,21 @@ import PasswordInput from "./PasswordInput";
 
 interface Props {
   folders: Folder[];
+  entries?: Entry[];
   defaultFolderId?: string;
   onAdded: (entry: Entry) => void;
   onClose: () => void;
 }
 
-export default function AddEntryModal({ folders, defaultFolderId, onAdded, onClose }: Props) {
+export default function AddEntryModal({ folders, entries = [], defaultFolderId, onAdded, onClose }: Props) {
+  const emailSuggestions = useMemo(
+    () => [...new Set(entries.map((e) => e.email).filter(Boolean))].sort(),
+    [entries]
+  );
+  const usernameSuggestions = useMemo(
+    () => [...new Set(entries.map((e) => e.username).filter((u): u is string => !!u))].sort(),
+    [entries]
+  );
   const [form, setForm] = useState({
     name: "", username: "", email: "", password: "", url: "", notes: "",
     folder_id: defaultFolderId ?? "", totp_secret: "",
@@ -94,11 +103,21 @@ export default function AddEntryModal({ folders, defaultFolderId, onAdded, onClo
           </div>
           <div>
             <label style={labelStyle}>Username <span style={{ opacity: 0.5, fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>(optional)</span></label>
-            <input placeholder="Username" value={form.username} onChange={set("username")} />
+            <input placeholder="Username" value={form.username} onChange={set("username")} list="username-suggestions" autoComplete="off" />
+            {usernameSuggestions.length > 0 && (
+              <datalist id="username-suggestions">
+                {usernameSuggestions.map((u) => <option key={u} value={u} />)}
+              </datalist>
+            )}
           </div>
           <div>
             <label style={labelStyle}>Email</label>
-            <input placeholder="email@example.com" type="email" value={form.email} onChange={set("email")} />
+            <input placeholder="email@example.com" type="email" value={form.email} onChange={set("email")} list="email-suggestions" autoComplete="off" />
+            {emailSuggestions.length > 0 && (
+              <datalist id="email-suggestions">
+                {emailSuggestions.map((em) => <option key={em} value={em} />)}
+              </datalist>
+            )}
           </div>
           <div>
             <label style={labelStyle}>Password</label>

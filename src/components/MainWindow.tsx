@@ -196,6 +196,7 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
       {showAdd && (
         <AddEntryModal
           folders={folders}
+          entries={entries}
           defaultFolderId={activeFolder ?? undefined}
           onAdded={handleAdded}
           onClose={() => setShowAdd(false)}
