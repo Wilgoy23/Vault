@@ -132,6 +132,42 @@ pub fn unlock_vault(master_password: &str) -> Result<(Zeroizing<[u8; 32]>, Vault
     Ok((key, data))
 }
 
+/// Re-encrypts the vault under a new master password. Verifies the current
+/// password against the on-disk file first, then generates a fresh salt and
+/// key and rewrites the vault atomically. Returns the new session key.
+pub fn change_master_password(
+    current_password: &str,
+    new_password: &str,
+    data: &VaultData,
+) -> Result<Zeroizing<[u8; 32]>, String> {
+    let path = vault_path()?;
+    let raw = fs::read_to_string(&path)
+        .map_err(|_| "Vault file not found".to_string())?;
+    let file: VaultFile = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+
+    let salt_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&file.salt)
+        .map_err(|e| e.to_string())?;
+    let current_key = crypto::derive_key(current_password, &salt_bytes)?;
+    crypto::decrypt(&file.ciphertext, &current_key)
+        .map_err(|_| "Current password is incorrect".to_string())?;
+
+    let new_salt = crypto::generate_salt();
+    let new_key = crypto::derive_key(new_password, &new_salt)?;
+
+    let json = Zeroizing::new(serde_json::to_vec(data).map_err(|e| e.to_string())?);
+    let ciphertext = crypto::encrypt(&json, &new_key)?;
+
+    let updated = VaultFile {
+        salt: base64::engine::general_purpose::STANDARD.encode(new_salt),
+        ciphertext,
+    };
+
+    let out = serde_json::to_string(&updated).map_err(|e| e.to_string())?;
+    write_vault_file(&path, &out)?;
+    Ok(new_key)
+}
+
 /// Encrypts and writes VaultData back to disk using the current session key.
 pub fn save_vault(key: &[u8; 32], data: &VaultData) -> Result<(), String> {
     let path = vault_path()?;
@@ -531,6 +567,66 @@ mod tests {
 
         let (_key2, data2) = unlock_vault_at(&dir, "password");
         assert_eq!(data2.entries[0].totp_secret, Some("JBSWY3DPEHPK3PXP".into()));
+    }
+
+    /// Mirrors change_master_password() at a temp path: verify the current
+    /// password, then rewrite the file with a fresh salt and new key.
+    fn change_password_at(dir: &PathBuf, current: &str, new: &str, data: &VaultData) {
+        let raw = fs::read_to_string(temp_vault_path(dir)).unwrap();
+        let file: VaultFile = serde_json::from_str(&raw).unwrap();
+        let salt_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&file.salt)
+            .unwrap();
+        let current_key = crypto::derive_key(current, &salt_bytes).unwrap();
+        crypto::decrypt(&file.ciphertext, &current_key).unwrap();
+
+        let new_salt = crypto::generate_salt();
+        let new_key = crypto::derive_key(new, &new_salt).unwrap();
+        let json = serde_json::to_vec(data).unwrap();
+        let ciphertext = crypto::encrypt(&json, &new_key).unwrap();
+        let updated = VaultFile {
+            salt: base64::engine::general_purpose::STANDARD.encode(new_salt),
+            ciphertext,
+        };
+        fs::write(temp_vault_path(dir), serde_json::to_string(&updated).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn change_password_reencrypts_and_old_password_fails() {
+        let dir = setup_temp_vault("change_password");
+        create_vault_at(&dir, "old-password");
+        let (key, mut data) = unlock_vault_at(&dir, "old-password");
+
+        data.entries.push(Entry {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Kept".into(),
+            username: None,
+            email: "a@b.com".into(),
+            password: "secret".into(),
+            url: None,
+            notes: None,
+            folder_id: None,
+            totp_secret: None,
+            created_at: now_secs(),
+            updated_at: now_secs(),
+        });
+        save_vault_at(&dir, &key, &data);
+
+        change_password_at(&dir, "old-password", "new-password", &data);
+
+        // New password unlocks and the data survived the re-encryption
+        let (_key2, data2) = unlock_vault_at(&dir, "new-password");
+        assert_eq!(data2.entries.len(), 1);
+        assert_eq!(data2.entries[0].name, "Kept");
+
+        // Old password no longer decrypts the vault
+        let raw = fs::read_to_string(temp_vault_path(&dir)).unwrap();
+        let file: VaultFile = serde_json::from_str(&raw).unwrap();
+        let salt_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&file.salt)
+            .unwrap();
+        let old_key = crypto::derive_key("old-password", &salt_bytes).unwrap();
+        assert!(crypto::decrypt(&file.ciphertext, &old_key).is_err());
     }
 
     #[test]

@@ -127,6 +127,25 @@ fn unlock(mut password: String, state: State<VaultState>) -> Result<(), String> 
 }
 
 #[tauri::command]
+fn change_master_password(
+    mut current_password: String,
+    mut new_password: String,
+    state: State<VaultState>,
+) -> Result<(), String> {
+    let mut guard = state.lock().unwrap();
+    let s = &mut *guard;
+    let result = match (&s.key, &s.data) {
+        (Some(_), Some(data)) => vault::change_master_password(&current_password, &new_password, data),
+        _ => Err("Vault is locked".into()),
+    };
+    current_password.zeroize();
+    new_password.zeroize();
+    // Replacing the old key zeroizes it on drop
+    s.key = Some(result?);
+    Ok(())
+}
+
+#[tauri::command]
 fn lock(state: State<VaultState>) {
     let mut s = state.lock().unwrap();
     // Dropping these zeroizes the key and all decrypted entries
@@ -417,6 +436,7 @@ fn main() {
             create_vault,
             unlock,
             lock,
+            change_master_password,
             is_unlocked,
             list_entries,
             add_entry,

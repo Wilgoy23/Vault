@@ -13,6 +13,9 @@ export const unlock = (password: string) =>
 export const lock = () =>
   invoke<void>("lock");
 
+export const changeMasterPassword = (currentPassword: string, newPassword: string) =>
+  invoke<void>("change_master_password", { currentPassword, newPassword });
+
 export const isUnlocked = () =>
   invoke<boolean>("is_unlocked");
 
