@@ -299,6 +299,50 @@ pub fn delete_entry(key: &[u8; 32], data: &mut VaultData, id: &str) -> Result<()
     save_vault(key, data)
 }
 
+/// Adds parsed CSV logins to the vault, creating folders as needed, and
+/// saves once at the end. Returns the number of entries imported.
+pub fn import_csv_logins(
+    key: &[u8; 32],
+    data: &mut VaultData,
+    logins: Vec<crate::csv_import::CsvLogin>,
+) -> Result<usize, String> {
+    let now = now_secs();
+    let count = logins.len();
+
+    for mut login in logins {
+        let folder_id = std::mem::take(&mut login.folder).map(|name| {
+            match data.folders.iter().find(|f| f.name.eq_ignore_ascii_case(&name)) {
+                Some(f) => f.id.clone(),
+                None => {
+                    let folder = Folder { id: Uuid::new_v4().to_string(), name };
+                    let id = folder.id.clone();
+                    data.folders.push(folder);
+                    id
+                }
+            }
+        });
+
+        data.entries.push(Entry {
+            id: Uuid::new_v4().to_string(),
+            name: std::mem::take(&mut login.name),
+            username: std::mem::take(&mut login.username),
+            email: std::mem::take(&mut login.email),
+            password: std::mem::take(&mut login.password),
+            url: std::mem::take(&mut login.url),
+            notes: std::mem::take(&mut login.notes),
+            folder_id,
+            totp_secret: std::mem::take(&mut login.totp_secret),
+            created_at: now,
+            updated_at: now,
+        });
+    }
+
+    if count > 0 {
+        save_vault(key, data)?;
+    }
+    Ok(count)
+}
+
 /// Copies the encrypted vault file to the given destination path.
 pub fn export_vault(dest_path: &Path) -> Result<(), String> {
     let src = vault_path()?;

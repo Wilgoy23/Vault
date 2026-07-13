@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod crypto;
+mod csv_import;
 mod vault;
 
 use std::sync::Mutex;
@@ -296,6 +297,44 @@ async fn import_vault(app: tauri::AppHandle, state: State<'_, VaultState>) -> Re
     Ok(true)
 }
 
+/// What a CSV import did, reported back to the UI.
+#[derive(serde::Serialize)]
+struct CsvImportReport {
+    imported: usize,
+    skipped: usize,
+}
+
+/// Imports logins from a browser / password-manager CSV export. The file
+/// dialog and the plaintext CSV content stay on the Rust side; the raw
+/// content is zeroized after parsing. Returns None when the user cancels.
+#[tauri::command]
+async fn import_csv(
+    app: tauri::AppHandle,
+    state: State<'_, VaultState>,
+) -> Result<Option<CsvImportReport>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .add_filter("CSV Export", &["csv"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    let raw = Zeroizing::new(
+        std::fs::read_to_string(&path).map_err(|_| "Cannot read the selected file".to_string())?,
+    );
+    let parsed = csv_import::parse(&raw)?;
+
+    let mut guard = state.lock().unwrap();
+    let s = &mut *guard;
+    let key = s.key.as_deref().ok_or("Vault is locked")?;
+    let data = s.data.as_mut().ok_or("Vault is locked")?;
+    let imported = vault::import_csv_logins(&key, data, parsed.logins)?;
+    Ok(Some(CsvImportReport { imported, skipped: parsed.skipped }))
+}
+
 // ── Autostart commands ────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -448,6 +487,7 @@ fn main() {
             delete_folder,
             export_vault,
             import_vault,
+            import_csv,
             enable_autostart,
             disable_autostart,
             is_autostart_enabled,

@@ -68,6 +68,15 @@ export const exportVault = () =>
 export const importVault = () =>
   invoke<boolean>("import_vault");
 
+export interface CsvImportReport {
+  imported: number;
+  skipped: number;
+}
+
+// Resolves to null when the user cancels the file dialog.
+export const importCsv = () =>
+  invoke<CsvImportReport | null>("import_csv");
+
 export const enableAutostart = () =>
   invoke<void>("enable_autostart");
 

@@ -214,6 +214,7 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
           shortcut={shortcut}
           onShortcutChange={onShortcutChange}
           onImported={() => { setShowSettings(false); onLocked(); }}
+          onCsvImported={() => { listEntries().then(setEntries); listFolders().then(setFolders); }}
           onClose={() => setShowSettings(false)}
         />
       )}

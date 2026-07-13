@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Palette, Shield, Monitor, Database, X, Keyboard } from "lucide-react";
 import { THEMES, Theme } from "../themes";
-import { exportVault, importVault, enableAutostart, disableAutostart, changeMasterPassword } from "../api";
+import { exportVault, importVault, importCsv, enableAutostart, disableAutostart, changeMasterPassword } from "../api";
 
 const TIMEOUT_OPTIONS = [
   { label: "1 min",  ms: 1 * 60 * 1000 },
@@ -22,6 +22,7 @@ interface Props {
   shortcut: string;
   onShortcutChange: (s: string) => void;
   onImported: () => void;
+  onCsvImported: () => void;
   onClose: () => void;
 }
 
@@ -30,7 +31,7 @@ export default function SettingsModal({
   timeoutMs, onTimeoutChange,
   autostart, onAutostartChange,
   shortcut, onShortcutChange,
-  onImported, onClose,
+  onImported, onCsvImported, onClose,
 }: Props) {
   const handleAutostartToggle = async () => {
     try {
@@ -139,11 +140,64 @@ export default function SettingsModal({
                 </button>
               </div>
             </Row>
+            <CsvImportRow onImported={onCsvImported} />
           </Section>
 
         </div>
       </div>
     </div>
+  );
+}
+
+function CsvImportRow({ onImported }: { onImported: () => void }) {
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const handleImport = async () => {
+    setStatus("");
+    setError("");
+    setBusy(true);
+    try {
+      const report = await importCsv();
+      if (report) {
+        const entries = `${report.imported} ${report.imported === 1 ? "entry" : "entries"}`;
+        setStatus(report.skipped > 0
+          ? `Imported ${entries} · ${report.skipped} row${report.skipped === 1 ? "" : "s"} skipped`
+          : `Imported ${entries}`);
+        if (report.imported > 0) onImported();
+      }
+    } catch (e: any) {
+      setError(e?.toString() ?? "Import failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <Row label="CSV import">
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          {status && (
+            <span style={{ fontSize: "12.5px", color: "var(--success)" }}>{status}</span>
+          )}
+          <button
+            className="btn-ghost"
+            style={{ fontSize: "13px", padding: "6px 14px" }}
+            onClick={handleImport}
+            disabled={busy}
+            title="Import logins from a browser or password manager CSV export"
+          >
+            {busy ? "Importing…" : "Import…"}
+          </button>
+        </div>
+      </Row>
+      {error && <p className="error" style={{ margin: "0 0 12px", fontSize: "12px" }}>{error}</p>}
+      <p style={{ fontSize: "11px", color: "var(--muted-dim)", lineHeight: 1.5, margin: "-4px 0 0" }}>
+        Supports Chrome, Edge, Firefox, Bitwarden and LastPass exports.
+        Delete the CSV file afterwards — it contains your passwords in plain text.
+      </p>
+    </>
   );
 }
 
