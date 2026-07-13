@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Copy, Check, Eye, EyeOff, Pencil, Trash2, X, Save, ShieldCheck } from "lucide-react";
 import { Entry, Folder } from "../types";
-import { updateEntry, deleteEntry, writeClipboardText, scheduleClipboardClear } from "../api";
+import { updateEntry, deleteEntry, writeClipboardText, scheduleClipboardClear, markEntryUsed } from "../api";
 import { generateTOTP, totpSecondsLeft } from "../utils/totp";
 import PasswordInput from "./PasswordInput";
 
@@ -32,13 +32,15 @@ function passwordStrength(pw: string): number {
   return Math.min(4, Math.max(1, score));
 }
 
-function useClipboard() {
+function useClipboard(entryId: string) {
   const [copied, setCopied] = useState<string | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const copy = async (key: string, value: string) => {
     await writeClipboardText(value);
+    // Feeds the overlay's recently-used ordering; failure is non-fatal
+    markEntryUsed(entryId).catch(() => {});
     setCopied(key);
     setTimeout(() => setCopied(null), 1500);
 
@@ -175,7 +177,7 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
   const [form, setForm] = useState({ ...entry });
   const [error, setError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const { copied, copy, countdown } = useClipboard();
+  const { copied, copy, countdown } = useClipboard(entry.id);
 
   useEffect(() => {
     if (editTrigger && editTrigger > 0) setEditing(true);

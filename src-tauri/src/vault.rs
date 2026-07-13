@@ -33,6 +33,12 @@ pub struct Entry {
     pub totp_secret: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
+    /// When a credential from this entry was last copied (unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<u64>,
+    /// How many times a credential from this entry has been copied.
+    #[serde(default)]
+    pub use_count: u64,
 }
 
 /// The decrypted vault contents (serialized to JSON before encryption).
@@ -220,6 +226,8 @@ pub fn add_entry(
         totp_secret,
         created_at: now,
         updated_at: now,
+        last_used_at: None,
+        use_count: 0,
     };
     data.entries.push(entry.clone());
     save_vault(key, data)?;
@@ -289,6 +297,19 @@ pub fn delete_folder(key: &[u8; 32], data: &mut VaultData, id: &str) -> Result<(
     save_vault(key, data)
 }
 
+/// Records that a credential from the entry was copied, for recency
+/// ordering in the overlay, and saves the vault.
+pub fn mark_entry_used(key: &[u8; 32], data: &mut VaultData, id: &str) -> Result<(), String> {
+    let entry = data
+        .entries
+        .iter_mut()
+        .find(|e| e.id == id)
+        .ok_or("Entry not found")?;
+    entry.last_used_at = Some(now_secs());
+    entry.use_count = entry.use_count.saturating_add(1);
+    save_vault(key, data)
+}
+
 /// Deletes an entry by id and saves the vault.
 pub fn delete_entry(key: &[u8; 32], data: &mut VaultData, id: &str) -> Result<(), String> {
     let before = data.entries.len();
@@ -334,6 +355,8 @@ pub fn import_csv_logins(
             totp_secret: std::mem::take(&mut login.totp_secret),
             created_at: now,
             updated_at: now,
+            last_used_at: None,
+            use_count: 0,
         });
     }
 
@@ -481,6 +504,8 @@ mod tests {
             totp_secret: None,
             created_at: now_secs(),
             updated_at: now_secs(),
+            last_used_at: None,
+            use_count: 0,
         };
         data.entries.push(entry.clone());
         save_vault_at(&dir, &key, &data);
@@ -510,6 +535,8 @@ mod tests {
             totp_secret: None,
             created_at: now_secs(),
             updated_at: now_secs(),
+            last_used_at: None,
+            use_count: 0,
         });
         save_vault_at(&dir, &key, &data);
 
@@ -539,6 +566,8 @@ mod tests {
             totp_secret: None,
             created_at: now_secs(),
             updated_at: now_secs(),
+            last_used_at: None,
+            use_count: 0,
         });
         save_vault_at(&dir, &key, &data);
 
@@ -573,6 +602,8 @@ mod tests {
             totp_secret: Some("JBSWY3DPEHPK3PXP".into()),
             created_at: now_secs(),
             updated_at: now_secs(),
+            last_used_at: None,
+            use_count: 0,
         });
         save_vault_at(&dir, &key, &data);
 
@@ -600,6 +631,8 @@ mod tests {
             totp_secret: None,
             created_at: now_secs(),
             updated_at: now_secs(),
+            last_used_at: None,
+            use_count: 0,
         });
         save_vault_at(&dir, &key, &data);
 
@@ -611,6 +644,62 @@ mod tests {
 
         let (_key2, data2) = unlock_vault_at(&dir, "password");
         assert_eq!(data2.entries[0].totp_secret, Some("JBSWY3DPEHPK3PXP".into()));
+    }
+
+    #[test]
+    fn usage_stats_persist_roundtrip() {
+        let dir = setup_temp_vault("usage_stats_roundtrip");
+        create_vault_at(&dir, "password");
+        let (key, mut data) = unlock_vault_at(&dir, "password");
+
+        data.entries.push(Entry {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Daily Login".into(),
+            username: None,
+            email: "user@example.com".into(),
+            password: "pass".into(),
+            url: None,
+            notes: None,
+            folder_id: None,
+            totp_secret: None,
+            created_at: now_secs(),
+            updated_at: now_secs(),
+            last_used_at: None,
+            use_count: 0,
+        });
+        save_vault_at(&dir, &key, &data);
+
+        // Simulate mark_entry_used's mutation
+        let used_at = now_secs();
+        data.entries[0].last_used_at = Some(used_at);
+        data.entries[0].use_count += 1;
+        save_vault_at(&dir, &key, &data);
+
+        let (_key2, data2) = unlock_vault_at(&dir, "password");
+        assert_eq!(data2.entries[0].last_used_at, Some(used_at));
+        assert_eq!(data2.entries[0].use_count, 1);
+    }
+
+    #[test]
+    fn mark_entry_used_not_found_returns_error() {
+        let mut data = VaultData::default();
+        let dummy_key = [0u8; 32];
+        let result = mark_entry_used(&dummy_key, &mut data, "nonexistent-id");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Entry not found");
+    }
+
+    #[test]
+    fn entry_without_usage_fields_deserializes() {
+        // Vaults written before last_used_at/use_count existed must still load
+        let json = br#"{
+            "id": "old-id", "name": "Legacy", "email": "a@b.com",
+            "password": "pass", "url": null, "notes": null,
+            "created_at": 100, "updated_at": 100
+        }"#;
+        let entry: Entry = serde_json::from_slice(json).unwrap();
+        assert_eq!(entry.last_used_at, None);
+        assert_eq!(entry.use_count, 0);
     }
 
     /// Mirrors change_master_password() at a temp path: verify the current
@@ -653,6 +742,8 @@ mod tests {
             totp_secret: None,
             created_at: now_secs(),
             updated_at: now_secs(),
+            last_used_at: None,
+            use_count: 0,
         });
         save_vault_at(&dir, &key, &data);
 
@@ -725,6 +816,8 @@ mod tests {
                 totp_secret: None,
                 created_at: now_secs(),
                 updated_at: now_secs(),
+                last_used_at: None,
+                use_count: 0,
             }],
             folders: vec![],
         };
@@ -756,6 +849,8 @@ mod tests {
                 totp_secret: None,
                 created_at: now_secs(),
                 updated_at: now_secs(),
+                last_used_at: None,
+                use_count: 0,
             });
         }
         save_vault_at(&dir, &key, &data);

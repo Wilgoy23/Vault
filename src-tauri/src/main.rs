@@ -244,6 +244,15 @@ fn delete_folder(id: String, state: State<VaultState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn mark_entry_used(id: String, state: State<VaultState>) -> Result<(), String> {
+    let mut guard = state.lock().unwrap();
+    let s = &mut *guard;
+    let key = s.key.as_deref().ok_or("Vault is locked")?;
+    let data = s.data.as_mut().ok_or("Vault is locked")?;
+    vault::mark_entry_used(&key, data, &id)
+}
+
+#[tauri::command]
 fn delete_entry(id: String, state: State<VaultState>) -> Result<(), String> {
     let mut guard = state.lock().unwrap();
     let s = &mut *guard;
@@ -481,6 +490,7 @@ fn main() {
             add_entry,
             update_entry,
             delete_entry,
+            mark_entry_used,
             list_folders,
             add_folder,
             rename_folder,

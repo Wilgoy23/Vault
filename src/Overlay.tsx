@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit } from "@tauri-apps/api/event";
 import { Eye, EyeOff, ArrowLeft } from "lucide-react";
-import { isUnlocked, listEntries, unlock, writeClipboardText, scheduleClipboardClear } from "./api";
+import { isUnlocked, listEntries, unlock, writeClipboardText, scheduleClipboardClear, markEntryUsed } from "./api";
 import { Entry } from "./types";
 import { generateTOTP, totpSecondsLeft } from "./utils/totp";
 import { applyTheme, DEFAULT_THEME_ID } from "./themes";
@@ -17,13 +17,29 @@ function avatarClass(name: string) {
   return AV_CLASSES[code % AV_CLASSES.length];
 }
 
-function useCopy() {
+/** Recency-weighted usage score. Frequently copied entries rank high, but
+ * the weight decays as the last copy ages, so a burst of old activity
+ * doesn't pin an entry to the top forever. Never-used entries score 0 and
+ * keep their vault order (Array.sort is stable). */
+function frecency(e: Entry): number {
+  if (!e.use_count || !e.last_used_at) return 0;
+  const age = Date.now() / 1000 - e.last_used_at;
+  const weight =
+    age < 3600 ? 4 :      // last hour
+    age < 86400 ? 2 :     // last day
+    age < 604800 ? 1 :    // last week
+    0.5;
+  return e.use_count * weight;
+}
+
+function useCopy(entryId: string) {
   const [copied, setCopied] = useState<string | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const copy = async (key: string, value: string) => {
     await writeClipboardText(value);
+    markEntryUsed(entryId).catch(() => {});
     setCopied(key);
     setTimeout(() => setCopied(null), 1500);
 
@@ -141,7 +157,7 @@ function CopiedToast({ label }: { label: string }) {
 
 function EntryDetail({ entry, onClose }: { entry: Entry; onClose: () => void }) {
   const [showPw, setShowPw] = useState(false);
-  const { copied, copy, countdown } = useCopy();
+  const { copied, copy, countdown } = useCopy(entry.id);
 
   // Get current TOTP code for keyboard copy (non-reactive snapshot is fine here)
   const totpCodeRef = useRef<string>("------");
@@ -375,11 +391,13 @@ export default function Overlay() {
     }
   };
 
-  const filtered = entries.filter(
-    (e) =>
-      e.name.toLowerCase().includes(search.toLowerCase()) ||
-      e.email.toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = entries
+    .filter(
+      (e) =>
+        e.name.toLowerCase().includes(search.toLowerCase()) ||
+        e.email.toLowerCase().includes(search.toLowerCase())
+    )
+    .sort((a, b) => frecency(b) - frecency(a));
 
   const openEntry = (entry: Entry) => setSelectedEntry(entry);
   const closeEntry = () => {

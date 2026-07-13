@@ -60,6 +60,11 @@ export const deleteFolder = (id: string) =>
 export const deleteEntry = (id: string) =>
   invoke<void>("delete_entry", { id });
 
+// Stamps last_used_at / use_count on the entry so the overlay can order
+// by recency. Fire-and-forget from copy handlers.
+export const markEntryUsed = (id: string) =>
+  invoke<void>("mark_entry_used", { id });
+
 // The save/open dialogs run on the Rust side so file paths never transit IPC.
 // Both resolve to false when the user cancels the dialog.
 export const exportVault = () =>
