@@ -3,6 +3,7 @@ import { Copy, Check, Eye, EyeOff, Pencil, Trash2, X, Save, ShieldCheck } from "
 import { Entry, Folder } from "../types";
 import { updateEntry, deleteEntry, writeClipboardText, scheduleClipboardClear, markEntryUsed } from "../api";
 import { generateTOTP, totpSecondsLeft } from "../utils/totp";
+import { passwordStrength, STRENGTH_LABELS } from "../utils/password";
 import PasswordInput from "./PasswordInput";
 
 interface Props {
@@ -20,16 +21,6 @@ const AV_CLASSES = [
 function avatarClass(name: string) {
   const code = (name.charCodeAt(0) || 0) + (name.charCodeAt(1) || 0);
   return AV_CLASSES[code % AV_CLASSES.length];
-}
-
-function passwordStrength(pw: string): number {
-  if (!pw) return 0;
-  let score = 0;
-  if (pw.length >= 8)  score++;
-  if (pw.length >= 12) score++;
-  if (/[A-Z]/.test(pw) && /[0-9]/.test(pw)) score++;
-  if (/[^A-Za-z0-9]/.test(pw) && pw.length >= 14) score++;
-  return Math.min(4, Math.max(1, score));
 }
 
 function useClipboard(entryId: string) {
@@ -86,7 +77,7 @@ function CopyBtn({ id, value, copied, onCopy }: {
 function StrengthBars({ score }: { score: number }) {
   const colors = ["s1", "s2", "s3", "s4"];
   return (
-    <div className="pw-strength" title={["", "Weak", "Fair", "Good", "Strong"][score]}>
+    <div className="pw-strength" title={STRENGTH_LABELS[score]}>
       {[1, 2, 3, 4].map((i) => (
         <div key={i} className={`pw-bar ${i <= score ? colors[score - 1] : ""}`} />
       ))}
