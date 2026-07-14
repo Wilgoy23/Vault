@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { ShieldCheck, Lock } from "lucide-react";
+import { ShieldCheck, Lock, Eye, EyeOff, Check } from "lucide-react";
 import { createVault, unlock, vaultExists } from "../api";
+import MasterPasswordMeter from "./MasterPasswordMeter";
 
 interface Props {
   onUnlocked: () => void;
@@ -10,12 +11,16 @@ export default function LockScreen({ onUnlocked }: Props) {
   const [isNew, setIsNew] = useState<boolean | null>(null);
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   useState(() => {
     vaultExists().then((exists) => setIsNew(!exists));
   });
+
+  const confirmMismatch = isNew === true && confirm.length > 0 && confirm !== password;
+  const confirmMatches = isNew === true && confirm.length > 0 && confirm === password;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -68,23 +73,67 @@ export default function LockScreen({ onUnlocked }: Props) {
         </div>
 
         <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-          <input
-            type="password"
-            placeholder="Master password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoFocus
-          />
-          {isNew && (
+          <div style={{ position: "relative" }}>
             <input
-              type="password"
-              placeholder="Confirm password"
-              value={confirm}
-              onChange={(e) => setConfirm(e.target.value)}
+              type={showPw ? "text" : "password"}
+              placeholder="Master password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoFocus
+              style={{ width: "100%", paddingRight: "38px" }}
             />
+            <button
+              type="button"
+              className="btn-icon"
+              onClick={() => setShowPw((s) => !s)}
+              title={showPw ? "Hide password" : "Show password"}
+              tabIndex={-1}
+              style={{
+                position: "absolute", right: "6px", top: "50%",
+                transform: "translateY(-50%)", padding: "5px",
+              }}
+            >
+              {showPw ? <EyeOff size={14} strokeWidth={2} /> : <Eye size={14} strokeWidth={2} />}
+            </button>
+          </div>
+
+          {/* Strength meter — creation only, where the choice is being made */}
+          {isNew && <MasterPasswordMeter password={password} />}
+
+          {isNew && (
+            <div style={{ position: "relative" }}>
+              <input
+                type={showPw ? "text" : "password"}
+                placeholder="Confirm password"
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+                style={{
+                  width: "100%", paddingRight: "38px",
+                  borderColor: confirmMismatch ? "var(--danger)" : undefined,
+                }}
+              />
+              {confirmMatches && (
+                <Check
+                  size={14} strokeWidth={2.5}
+                  style={{
+                    position: "absolute", right: "12px", top: "50%",
+                    transform: "translateY(-50%)", color: "var(--success)",
+                    pointerEvents: "none",
+                  }}
+                />
+              )}
+            </div>
+          )}
+          {confirmMismatch && (
+            <p className="error" style={{ margin: 0, fontSize: "12px" }}>Passwords don't match.</p>
           )}
           {error && <p className="error">{error}</p>}
-          <button type="submit" className="btn-primary" disabled={loading} style={{ marginTop: "4px" }}>
+          <button
+            type="submit"
+            className="btn-primary"
+            disabled={loading || (isNew === true && (password.length < 8 || confirm !== password))}
+            style={{ marginTop: "4px" }}
+          >
             {loading ? "Please wait…" : isNew ? "Create vault" : "Unlock"}
           </button>
         </form>

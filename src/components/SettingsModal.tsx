@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Palette, Shield, Monitor, Database, X, Keyboard } from "lucide-react";
 import { THEMES, Theme } from "../themes";
 import { exportVault, importVault, importCsv, enableAutostart, disableAutostart, changeMasterPassword } from "../api";
+import MasterPasswordMeter from "./MasterPasswordMeter";
 
 const TIMEOUT_OPTIONS = [
   { label: "1 min",  ms: 1 * 60 * 1000 },
@@ -275,6 +276,7 @@ function ChangeMasterPassword() {
             value={next}
             onChange={(e) => { setNext(e.target.value); setError(""); }}
           />
+          <MasterPasswordMeter password={next} />
           <input
             type="password"
             placeholder="Confirm new password"
