@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod crypto;
+mod csv_import;
 mod vault;
 
 use std::sync::Mutex;
@@ -13,6 +14,7 @@ use tauri::{
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState as SCState};
 use vault::{Entry, Folder, VaultData};
+use zeroize::{Zeroize, Zeroizing};
 
 const DEFAULT_SHORTCUT: &str = "Ctrl+Shift+P";
 const SHORTCUT_FILE: &str = "shortcut.conf";
@@ -76,9 +78,11 @@ fn toggle_overlay(app: &tauri::AppHandle) {
 }
 
 /// The session state held in memory while the vault is unlocked.
-/// Both fields are None when locked.
+/// Both fields are None when locked. The key and the vault data both
+/// zeroize themselves when dropped/replaced, so locking really does
+/// scrub the secrets from memory.
 struct AppState {
-    key: Option<[u8; 32]>,
+    key: Option<Zeroizing<[u8; 32]>>,
     data: Option<VaultData>,
 }
 
@@ -101,10 +105,11 @@ fn vault_exists() -> bool {
 }
 
 #[tauri::command]
-fn create_vault(password: String, state: State<VaultState>) -> Result<(), String> {
-    vault::create_vault(&password)?;
-    // Immediately unlock after creation
-    let (key, data) = vault::unlock_vault(&password)?;
+fn create_vault(mut password: String, state: State<VaultState>) -> Result<(), String> {
+    // Immediately unlock after creation; wipe the password either way
+    let result = vault::create_vault(&password).and_then(|_| vault::unlock_vault(&password));
+    password.zeroize();
+    let (key, data) = result?;
     let mut s = state.lock().unwrap();
     s.key = Some(key);
     s.data = Some(data);
@@ -112,20 +117,40 @@ fn create_vault(password: String, state: State<VaultState>) -> Result<(), String
 }
 
 #[tauri::command]
-fn unlock(password: String, state: State<VaultState>) -> Result<(), String> {
-    let (key, data) = vault::unlock_vault(&password)?;
+fn unlock(mut password: String, state: State<VaultState>) -> Result<(), String> {
+    let result = vault::unlock_vault(&password);
+    password.zeroize();
+    let (key, data) = result?;
     let mut s = state.lock().unwrap();
     s.key = Some(key);
     s.data = Some(data);
+    Ok(())
+}
+
+#[tauri::command]
+fn change_master_password(
+    mut current_password: String,
+    mut new_password: String,
+    state: State<VaultState>,
+) -> Result<(), String> {
+    let mut guard = state.lock().unwrap();
+    let s = &mut *guard;
+    let result = match (&s.key, &s.data) {
+        (Some(_), Some(data)) => vault::change_master_password(&current_password, &new_password, data),
+        _ => Err("Vault is locked".into()),
+    };
+    current_password.zeroize();
+    new_password.zeroize();
+    // Replacing the old key zeroizes it on drop
+    s.key = Some(result?);
     Ok(())
 }
 
 #[tauri::command]
 fn lock(state: State<VaultState>) {
     let mut s = state.lock().unwrap();
-    if let Some(mut key) = s.key.take() {
-        crypto::wipe_key(&mut key);
-    }
+    // Dropping these zeroizes the key and all decrypted entries
+    s.key = None;
     s.data = None;
 }
 
@@ -155,8 +180,9 @@ fn add_entry(
     totp_secret: Option<String>,
     state: State<VaultState>,
 ) -> Result<Entry, String> {
-    let mut s = state.lock().unwrap();
-    let key = s.key.ok_or("Vault is locked")?;
+    let mut guard = state.lock().unwrap();
+    let s = &mut *guard;
+    let key = s.key.as_deref().ok_or("Vault is locked")?;
     let data = s.data.as_mut().ok_or("Vault is locked")?;
     vault::add_entry(&key, data, name, username, email, password, url, notes, folder_id, totp_secret)
 }
@@ -174,8 +200,9 @@ fn update_entry(
     totp_secret: Option<String>,
     state: State<VaultState>,
 ) -> Result<(), String> {
-    let mut s = state.lock().unwrap();
-    let key = s.key.ok_or("Vault is locked")?;
+    let mut guard = state.lock().unwrap();
+    let s = &mut *guard;
+    let key = s.key.as_deref().ok_or("Vault is locked")?;
     let data = s.data.as_mut().ok_or("Vault is locked")?;
     vault::update_entry(&key, data, &id, name, username, email, password, url, notes, folder_id, totp_secret)
 }
@@ -191,53 +218,130 @@ fn list_folders(state: State<VaultState>) -> Result<Vec<Folder>, String> {
 
 #[tauri::command]
 fn add_folder(name: String, state: State<VaultState>) -> Result<Folder, String> {
-    let mut s = state.lock().unwrap();
-    let key = s.key.ok_or("Vault is locked")?;
+    let mut guard = state.lock().unwrap();
+    let s = &mut *guard;
+    let key = s.key.as_deref().ok_or("Vault is locked")?;
     let data = s.data.as_mut().ok_or("Vault is locked")?;
     vault::add_folder(&key, data, name)
 }
 
 #[tauri::command]
 fn rename_folder(id: String, name: String, state: State<VaultState>) -> Result<(), String> {
-    let mut s = state.lock().unwrap();
-    let key = s.key.ok_or("Vault is locked")?;
+    let mut guard = state.lock().unwrap();
+    let s = &mut *guard;
+    let key = s.key.as_deref().ok_or("Vault is locked")?;
     let data = s.data.as_mut().ok_or("Vault is locked")?;
     vault::rename_folder(&key, data, &id, name)
 }
 
 #[tauri::command]
 fn delete_folder(id: String, state: State<VaultState>) -> Result<(), String> {
-    let mut s = state.lock().unwrap();
-    let key = s.key.ok_or("Vault is locked")?;
+    let mut guard = state.lock().unwrap();
+    let s = &mut *guard;
+    let key = s.key.as_deref().ok_or("Vault is locked")?;
     let data = s.data.as_mut().ok_or("Vault is locked")?;
     vault::delete_folder(&key, data, &id)
 }
 
 #[tauri::command]
+fn mark_entry_used(id: String, state: State<VaultState>) -> Result<(), String> {
+    let mut guard = state.lock().unwrap();
+    let s = &mut *guard;
+    let key = s.key.as_deref().ok_or("Vault is locked")?;
+    let data = s.data.as_mut().ok_or("Vault is locked")?;
+    vault::mark_entry_used(&key, data, &id)
+}
+
+#[tauri::command]
 fn delete_entry(id: String, state: State<VaultState>) -> Result<(), String> {
-    let mut s = state.lock().unwrap();
-    let key = s.key.ok_or("Vault is locked")?;
+    let mut guard = state.lock().unwrap();
+    let s = &mut *guard;
+    let key = s.key.as_deref().ok_or("Vault is locked")?;
     let data = s.data.as_mut().ok_or("Vault is locked")?;
     vault::delete_entry(&key, data, &id)
 }
 
 // ── Import / Export commands ──────────────────────────────────────────────────
+//
+// The file dialogs run in Rust rather than the webview, so the webview never
+// gets to choose filesystem paths — a compromised frontend can no longer copy
+// the vault to (or overwrite it from) an arbitrary location. Both commands
+// return false when the user cancels the dialog.
 
 #[tauri::command]
-fn export_vault(dest_path: String) -> Result<(), String> {
-    vault::export_vault(&dest_path)
+async fn export_vault(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .add_filter("Vault Backup", &["enc"])
+        .set_file_name("vault-backup.enc")
+        .blocking_save_file()
+    else {
+        return Ok(false);
+    };
+    let dest = picked.into_path().map_err(|e| e.to_string())?;
+    vault::export_vault(&dest)?;
+    Ok(true)
 }
 
 #[tauri::command]
-fn import_vault(src_path: String, state: State<VaultState>) -> Result<(), String> {
-    vault::import_vault(&src_path)?;
-    // Clear the in-memory session so the user must re-unlock with the new vault's password
+async fn import_vault(app: tauri::AppHandle, state: State<'_, VaultState>) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .add_filter("Vault Backup", &["enc"])
+        .blocking_pick_file()
+    else {
+        return Ok(false);
+    };
+    let src = picked.into_path().map_err(|e| e.to_string())?;
+    vault::import_vault(&src)?;
+    // Clear the in-memory session so the user must re-unlock with the new
+    // vault's password; dropping the fields zeroizes them
     let mut s = state.lock().unwrap();
-    if let Some(mut key) = s.key.take() {
-        crypto::wipe_key(&mut key);
-    }
+    s.key = None;
     s.data = None;
-    Ok(())
+    Ok(true)
+}
+
+/// What a CSV import did, reported back to the UI.
+#[derive(serde::Serialize)]
+struct CsvImportReport {
+    imported: usize,
+    skipped: usize,
+}
+
+/// Imports logins from a browser / password-manager CSV export. The file
+/// dialog and the plaintext CSV content stay on the Rust side; the raw
+/// content is zeroized after parsing. Returns None when the user cancels.
+#[tauri::command]
+async fn import_csv(
+    app: tauri::AppHandle,
+    state: State<'_, VaultState>,
+) -> Result<Option<CsvImportReport>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .add_filter("CSV Export", &["csv"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    let raw = Zeroizing::new(
+        std::fs::read_to_string(&path).map_err(|_| "Cannot read the selected file".to_string())?,
+    );
+    let parsed = csv_import::parse(&raw)?;
+
+    let mut guard = state.lock().unwrap();
+    let s = &mut *guard;
+    let key = s.key.as_deref().ok_or("Vault is locked")?;
+    let data = s.data.as_mut().ok_or("Vault is locked")?;
+    let imported = vault::import_csv_logins(&key, data, parsed.logins)?;
+    Ok(Some(CsvImportReport { imported, skipped: parsed.skipped }))
 }
 
 // ── Autostart commands ────────────────────────────────────────────────────────
@@ -354,6 +458,18 @@ fn set_overlay_shortcut(
 
 fn main() {
     tauri::Builder::default()
+        // Must be the FIRST plugin registered. When the user launches a second
+        // instance (e.g. clicking the pinned taskbar icon again), this callback
+        // fires in the already-running instance and the new process exits, so we
+        // just restore and focus the existing main window instead of opening a
+        // duplicate.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -368,17 +484,20 @@ fn main() {
             create_vault,
             unlock,
             lock,
+            change_master_password,
             is_unlocked,
             list_entries,
             add_entry,
             update_entry,
             delete_entry,
+            mark_entry_used,
             list_folders,
             add_folder,
             rename_folder,
             delete_folder,
             export_vault,
             import_vault,
+            import_csv,
             enable_autostart,
             disable_autostart,
             is_autostart_enabled,
@@ -437,9 +556,7 @@ fn main() {
                     "lock" => {
                         if let Some(state) = app.try_state::<VaultState>() {
                             let mut s = state.lock().unwrap();
-                            if let Some(mut key) = s.key.take() {
-                                crypto::wipe_key(&mut key);
-                            }
+                            s.key = None;
                             s.data = None;
                         }
                         // Show main window at the lock screen

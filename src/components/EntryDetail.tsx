@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Copy, Check, Eye, EyeOff, Pencil, Trash2, X, Save, ShieldCheck } from "lucide-react";
 import { Entry, Folder } from "../types";
-import { updateEntry, deleteEntry, writeClipboardText, scheduleClipboardClear } from "../api";
+import { updateEntry, deleteEntry, writeClipboardText, scheduleClipboardClear, markEntryUsed } from "../api";
 import { generateTOTP, totpSecondsLeft } from "../utils/totp";
+import { passwordStrength, STRENGTH_LABELS } from "../utils/password";
 import PasswordInput from "./PasswordInput";
 
 interface Props {
@@ -22,23 +23,15 @@ function avatarClass(name: string) {
   return AV_CLASSES[code % AV_CLASSES.length];
 }
 
-function passwordStrength(pw: string): number {
-  if (!pw) return 0;
-  let score = 0;
-  if (pw.length >= 8)  score++;
-  if (pw.length >= 12) score++;
-  if (/[A-Z]/.test(pw) && /[0-9]/.test(pw)) score++;
-  if (/[^A-Za-z0-9]/.test(pw) && pw.length >= 14) score++;
-  return Math.min(4, Math.max(1, score));
-}
-
-function useClipboard() {
+function useClipboard(entryId: string) {
   const [copied, setCopied] = useState<string | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const copy = async (key: string, value: string) => {
     await writeClipboardText(value);
+    // Feeds the overlay's recently-used ordering; failure is non-fatal
+    markEntryUsed(entryId).catch(() => {});
     setCopied(key);
     setTimeout(() => setCopied(null), 1500);
 
@@ -84,7 +77,7 @@ function CopyBtn({ id, value, copied, onCopy }: {
 function StrengthBars({ score }: { score: number }) {
   const colors = ["s1", "s2", "s3", "s4"];
   return (
-    <div className="pw-strength" title={["", "Weak", "Fair", "Good", "Strong"][score]}>
+    <div className="pw-strength" title={STRENGTH_LABELS[score]}>
       {[1, 2, 3, 4].map((i) => (
         <div key={i} className={`pw-bar ${i <= score ? colors[score - 1] : ""}`} />
       ))}
@@ -175,7 +168,7 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
   const [form, setForm] = useState({ ...entry });
   const [error, setError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const { copied, copy, countdown } = useClipboard();
+  const { copied, copy, countdown } = useClipboard(entry.id);
 
   useEffect(() => {
     if (editTrigger && editTrigger > 0) setEditing(true);

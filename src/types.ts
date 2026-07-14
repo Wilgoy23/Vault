@@ -15,4 +15,6 @@ export interface Entry {
   totp_secret?: string;
   created_at: number;
   updated_at: number;
+  last_used_at?: number;
+  use_count?: number;
 }

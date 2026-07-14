@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { save, open } from "@tauri-apps/plugin-dialog";
 import { Entry, Folder } from "./types";
 
 export const vaultExists = () =>
@@ -13,6 +12,9 @@ export const unlock = (password: string) =>
 
 export const lock = () =>
   invoke<void>("lock");
+
+export const changeMasterPassword = (currentPassword: string, newPassword: string) =>
+  invoke<void>("change_master_password", { currentPassword, newPassword });
 
 export const isUnlocked = () =>
   invoke<boolean>("is_unlocked");
@@ -58,26 +60,27 @@ export const deleteFolder = (id: string) =>
 export const deleteEntry = (id: string) =>
   invoke<void>("delete_entry", { id });
 
-export const exportVault = async (): Promise<boolean> => {
-  const destPath = await save({
-    filters: [{ name: "Vault Backup", extensions: ["enc"] }],
-    defaultPath: "vault-backup.enc",
-  });
-  if (!destPath) return false;
-  await invoke<void>("export_vault", { destPath });
-  return true;
-};
+// Stamps last_used_at / use_count on the entry so the overlay can order
+// by recency. Fire-and-forget from copy handlers.
+export const markEntryUsed = (id: string) =>
+  invoke<void>("mark_entry_used", { id });
 
-export const importVault = async (): Promise<boolean> => {
-  const srcPath = await open({
-    filters: [{ name: "Vault Backup", extensions: ["enc"] }],
-    multiple: false,
-    directory: false,
-  });
-  if (!srcPath) return false;
-  await invoke<void>("import_vault", { srcPath });
-  return true;
-};
+// The save/open dialogs run on the Rust side so file paths never transit IPC.
+// Both resolve to false when the user cancels the dialog.
+export const exportVault = () =>
+  invoke<boolean>("export_vault");
+
+export const importVault = () =>
+  invoke<boolean>("import_vault");
+
+export interface CsvImportReport {
+  imported: number;
+  skipped: number;
+}
+
+// Resolves to null when the user cancels the file dialog.
+export const importCsv = () =>
+  invoke<CsvImportReport | null>("import_csv");
 
 export const enableAutostart = () =>
   invoke<void>("enable_autostart");

@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Lock, Settings } from "lucide-react";
+import { Plus, Lock, Settings, ShieldCheck } from "lucide-react";
 import { listEntries, listFolders, lock, isAutostartEnabled, addFolder, renameFolder, deleteFolder } from "../api";
 import { Entry, Folder } from "../types";
 import EntryList from "./EntryList";
 import EntryDetail from "./EntryDetail";
 import AddEntryModal from "./AddEntryModal";
 import SettingsModal from "./SettingsModal";
+import SecurityView from "./SecurityView";
 
 interface Props {
   onLocked: () => void;
@@ -25,6 +26,7 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
   const [activeFolder, setActiveFolder] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showSecurity, setShowSecurity] = useState(false);
   const [autostart, setAutostart] = useState(false);
   const [editTrigger, setEditTrigger] = useState(0);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -50,6 +52,11 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
       }
       if (inInput) return;
 
+      if (showSecurity) {
+        if (e.key === "Escape") setShowSecurity(false);
+        return;
+      }
+
       if (e.key === "/" ) { e.preventDefault(); searchInputRef.current?.focus(); return; }
       if (e.key === "e" && selected) { setEditTrigger(t => t + 1); return; }
 
@@ -73,7 +80,7 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [filteredEntries, selected, showAdd, showSettings]);
+  }, [filteredEntries, selected, showAdd, showSettings, showSecurity]);
 
   useEffect(() => {
     listEntries().then(setEntries);
@@ -87,6 +94,13 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
     setEntries((prev) => [...prev, entry]);
     setSelected(entry);
     setShowAdd(false);
+    setShowSecurity(false);
+  };
+
+  // Jump from an audit finding to the entry itself
+  const handleAuditSelect = (entry: Entry) => {
+    setSelected(entry);
+    setShowSecurity(false);
   };
 
   const handleUpdated = (updated: Entry) => {
@@ -148,6 +162,14 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
           </button>
           <button
             className="btn-icon"
+            onClick={() => setShowSecurity((s) => !s)}
+            title="Password health"
+            style={showSecurity ? { color: "var(--accent)", background: "var(--accent-tint)" } : undefined}
+          >
+            <ShieldCheck size={15} strokeWidth={2} />
+          </button>
+          <button
+            className="btn-icon"
             onClick={handleLock}
             title="Lock vault"
           >
@@ -164,6 +186,11 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
       </div>
 
       {/* Body */}
+      {showSecurity ? (
+        <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+          <SecurityView entries={entries} onSelect={handleAuditSelect} />
+        </div>
+      ) : (
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         <EntryList
           entries={entries}
@@ -192,10 +219,12 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
           }
         </div>
       </div>
+      )}
 
       {showAdd && (
         <AddEntryModal
           folders={folders}
+          entries={entries}
           defaultFolderId={activeFolder ?? undefined}
           onAdded={handleAdded}
           onClose={() => setShowAdd(false)}
@@ -213,6 +242,7 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
           shortcut={shortcut}
           onShortcutChange={onShortcutChange}
           onImported={() => { setShowSettings(false); onLocked(); }}
+          onCsvImported={() => { listEntries().then(setEntries); listFolders().then(setFolders); }}
           onClose={() => setShowSettings(false)}
         />
       )}

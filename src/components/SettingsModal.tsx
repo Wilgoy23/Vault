@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Palette, Shield, Monitor, Database, X, Keyboard } from "lucide-react";
 import { THEMES, Theme } from "../themes";
-import { exportVault, importVault, enableAutostart, disableAutostart } from "../api";
+import { exportVault, importVault, importCsv, enableAutostart, disableAutostart, changeMasterPassword } from "../api";
+import MasterPasswordMeter from "./MasterPasswordMeter";
 
 const TIMEOUT_OPTIONS = [
   { label: "1 min",  ms: 1 * 60 * 1000 },
@@ -22,6 +23,7 @@ interface Props {
   shortcut: string;
   onShortcutChange: (s: string) => void;
   onImported: () => void;
+  onCsvImported: () => void;
   onClose: () => void;
 }
 
@@ -30,7 +32,7 @@ export default function SettingsModal({
   timeoutMs, onTimeoutChange,
   autostart, onAutostartChange,
   shortcut, onShortcutChange,
-  onImported, onClose,
+  onImported, onCsvImported, onClose,
 }: Props) {
   const handleAutostartToggle = async () => {
     try {
@@ -45,7 +47,7 @@ export default function SettingsModal({
 
   const handleImport = async () => {
     if (!window.confirm("Importing a vault will replace your current vault and lock the app. Continue?")) return;
-    try { await importVault(); onImported(); }
+    try { if (await importVault()) onImported(); }
     catch (e) { window.alert(`Import failed: ${e}`); }
   };
 
@@ -107,6 +109,7 @@ export default function SettingsModal({
                 ))}
               </select>
             </Row>
+            <ChangeMasterPassword />
           </Section>
 
           <Divider />
@@ -138,11 +141,160 @@ export default function SettingsModal({
                 </button>
               </div>
             </Row>
+            <CsvImportRow onImported={onCsvImported} />
           </Section>
 
         </div>
       </div>
     </div>
+  );
+}
+
+function CsvImportRow({ onImported }: { onImported: () => void }) {
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const handleImport = async () => {
+    setStatus("");
+    setError("");
+    setBusy(true);
+    try {
+      const report = await importCsv();
+      if (report) {
+        const entries = `${report.imported} ${report.imported === 1 ? "entry" : "entries"}`;
+        setStatus(report.skipped > 0
+          ? `Imported ${entries} · ${report.skipped} row${report.skipped === 1 ? "" : "s"} skipped`
+          : `Imported ${entries}`);
+        if (report.imported > 0) onImported();
+      }
+    } catch (e: any) {
+      setError(e?.toString() ?? "Import failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <Row label="CSV import">
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          {status && (
+            <span style={{ fontSize: "12.5px", color: "var(--success)" }}>{status}</span>
+          )}
+          <button
+            className="btn-ghost"
+            style={{ fontSize: "13px", padding: "6px 14px" }}
+            onClick={handleImport}
+            disabled={busy}
+            title="Import logins from a browser or password manager CSV export"
+          >
+            {busy ? "Importing…" : "Import…"}
+          </button>
+        </div>
+      </Row>
+      {error && <p className="error" style={{ margin: "0 0 12px", fontSize: "12px" }}>{error}</p>}
+      <p style={{ fontSize: "11px", color: "var(--muted-dim)", lineHeight: 1.5, margin: "-4px 0 0" }}>
+        Supports Chrome, Edge, Firefox, Bitwarden and LastPass exports.
+        Delete the CSV file afterwards — it contains your passwords in plain text.
+      </p>
+    </>
+  );
+}
+
+function ChangeMasterPassword() {
+  const [open, setOpen] = useState(false);
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [done, setDone] = useState(false);
+  const currentRef = useRef<HTMLInputElement>(null);
+
+  const reset = () => { setCurrent(""); setNext(""); setConfirm(""); setError(""); };
+
+  const toggle = () => {
+    reset();
+    setDone(false);
+    setOpen((o) => !o);
+    if (!open) setTimeout(() => currentRef.current?.focus(), 0);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    if (next.length < 8) { setError("New password must be at least 8 characters."); return; }
+    if (next !== confirm) { setError("New passwords don't match."); return; }
+    setSaving(true);
+    try {
+      await changeMasterPassword(current, next);
+      reset();
+      setOpen(false);
+      setDone(true);
+    } catch (err: any) {
+      setError(err?.toString() ?? "Failed to change password.");
+      currentRef.current?.focus();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <Row label="Master password">
+        {done && !open && (
+          <span style={{ fontSize: "12.5px", color: "var(--success)", marginRight: "10px" }}>
+            Password updated
+          </span>
+        )}
+        <button className="btn-ghost" style={{ fontSize: "13px", padding: "6px 14px" }} onClick={toggle}>
+          {open ? "Cancel" : "Change…"}
+        </button>
+      </Row>
+      {open && (
+        <form
+          onSubmit={handleSubmit}
+          style={{
+            display: "flex", flexDirection: "column", gap: "10px",
+            padding: "14px", marginBottom: "12px",
+            background: "rgba(255,255,255,0.03)",
+            border: "1px solid var(--border-dim)", borderRadius: "var(--r-md)",
+          }}
+        >
+          <input
+            ref={currentRef}
+            type="password"
+            placeholder="Current password"
+            value={current}
+            onChange={(e) => { setCurrent(e.target.value); setError(""); }}
+            autoFocus
+          />
+          <input
+            type="password"
+            placeholder="New password"
+            value={next}
+            onChange={(e) => { setNext(e.target.value); setError(""); }}
+          />
+          <MasterPasswordMeter password={next} />
+          <input
+            type="password"
+            placeholder="Confirm new password"
+            value={confirm}
+            onChange={(e) => { setConfirm(e.target.value); setError(""); }}
+          />
+          {error && <p className="error" style={{ margin: 0, fontSize: "12px" }}>{error}</p>}
+          <button
+            type="submit"
+            className="btn-primary"
+            disabled={saving || !current || !next || !confirm}
+            style={{ fontSize: "13px", padding: "8px" }}
+          >
+            {saving ? "Updating…" : "Update password"}
+          </button>
+        </form>
+      )}
+    </>
   );
 }
 
