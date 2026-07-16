@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Copy, Check, Eye, EyeOff, Pencil, Trash2, X, Save, ShieldCheck } from "lucide-react";
 import { Entry, Folder } from "../types";
-import { updateEntry, deleteEntry, writeClipboardText, scheduleClipboardClear, markEntryUsed } from "../api";
+import { updateEntry, writeClipboardText, scheduleClipboardClear, markEntryUsed } from "../api";
 import { generateTOTP, totpSecondsLeft } from "../utils/totp";
 import { passwordStrength, STRENGTH_LABELS } from "../utils/password";
 import PasswordInput from "./PasswordInput";
@@ -208,14 +208,10 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
     }
   };
 
-  const handleDelete = async () => {
+  // Actual deletion is deferred by the parent so it can offer Undo
+  const handleDelete = () => {
     if (!confirmDelete) { setConfirmDelete(true); return; }
-    try {
-      await deleteEntry(entry.id);
-      onDeleted(entry.id);
-    } catch (err: any) {
-      setError(err?.toString() ?? "Failed to delete.");
-    }
+    onDeleted(entry.id);
   };
 
   const currentFolder = folders.find((f) => f.id === entry.folder_id);
