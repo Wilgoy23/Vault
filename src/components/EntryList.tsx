@@ -19,7 +19,7 @@ interface Props {
   onFolderChange: (id: string | null) => void;
   onFolderAdded: (name: string) => Promise<FolderType>;
   onFolderRenamed: (id: string, name: string) => Promise<void>;
-  onFolderDeleted: (id: string) => Promise<void>;
+  onFolderDeleted: (id: string) => void;
   selectedId: string | null;
   onSelect: (entry: Entry) => void;
   search: string;
@@ -78,10 +78,10 @@ export default function EntryList({
     setRenamingId(null);
   };
 
-  const handleDeleteFolder = async (folder: FolderType, e: React.MouseEvent) => {
+  // No confirm dialog — the parent shows an Undo toast instead
+  const handleDeleteFolder = (folder: FolderType, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!window.confirm(`Delete folder "${folder.name}"? Entries will be moved to All.`)) return;
-    await onFolderDeleted(folder.id);
+    onFolderDeleted(folder.id);
   };
 
   return (

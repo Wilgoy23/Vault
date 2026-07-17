@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Copy, Check, Eye, EyeOff, Pencil, Trash2, X, Save, ShieldCheck } from "lucide-react";
 import { Entry, Folder } from "../types";
-import { updateEntry, deleteEntry, writeClipboardText, scheduleClipboardClear, markEntryUsed } from "../api";
+import { updateEntry, writeClipboardText, scheduleClipboardClear, markEntryUsed } from "../api";
 import { generateTOTP, totpSecondsLeft } from "../utils/totp";
 import { passwordStrength, STRENGTH_LABELS } from "../utils/password";
 import PasswordInput from "./PasswordInput";
+import TotpSecretInput from "./TotpSecretInput";
 
 interface Props {
   entry: Entry;
@@ -207,14 +208,10 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
     }
   };
 
-  const handleDelete = async () => {
+  // Actual deletion is deferred by the parent so it can offer Undo
+  const handleDelete = () => {
     if (!confirmDelete) { setConfirmDelete(true); return; }
-    try {
-      await deleteEntry(entry.id);
-      onDeleted(entry.id);
-    } catch (err: any) {
-      setError(err?.toString() ?? "Failed to delete.");
-    }
+    onDeleted(entry.id);
   };
 
   const currentFolder = folders.find((f) => f.id === entry.folder_id);
@@ -393,11 +390,10 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
             <div className="field-divider-v" />
             <div className="field-body">
               {editing
-                ? <input
+                ? <TotpSecretInput
                     value={form.totp_secret ?? ""}
-                    onChange={(e) => setForm({ ...form, totp_secret: e.target.value })}
-                    placeholder="Base32 secret (optional)"
-                    style={{ fontFamily: "var(--mono)", fontSize: "12.5px", letterSpacing: "0.05em" }}
+                    onChange={(v) => setForm((f) => ({ ...f, totp_secret: v }))}
+                    placeholder="Base32 secret or otpauth:// link (optional)"
                   />
                 : entry.totp_secret
                   ? <TotpDisplay secret={entry.totp_secret} copied={copied} onCopy={copy} />

@@ -3,6 +3,7 @@ import { X, ShieldCheck } from "lucide-react";
 import { addEntry } from "../api";
 import { Entry, Folder } from "../types";
 import PasswordInput from "./PasswordInput";
+import TotpSecretInput from "./TotpSecretInput";
 
 interface Props {
   folders: Folder[];
@@ -136,11 +137,13 @@ export default function AddEntryModal({ folders, entries = [], defaultFolderId, 
               <ShieldCheck size={11} strokeWidth={2.5} style={{ display: "inline", verticalAlign: "middle", marginRight: "4px" }} />
               2FA secret <span style={{ opacity: 0.5, fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>(optional)</span>
             </label>
-            <input
-              placeholder="Base32 TOTP secret"
+            <TotpSecretInput
               value={form.totp_secret}
-              onChange={set("totp_secret")}
-              style={{ fontFamily: "var(--mono)", fontSize: "12.5px", letterSpacing: "0.05em" }}
+              onChange={(v) => setForm((f) => ({ ...f, totp_secret: v }))}
+              onMeta={({ issuer, account }) =>
+                // An otpauth URI names the service — use it if the form is still blank
+                setForm((f) => ({ ...f, name: f.name || issuer || account || f.name }))
+              }
             />
           </div>
           {folders.length > 0 && (

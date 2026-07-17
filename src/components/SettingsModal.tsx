@@ -3,6 +3,7 @@ import { Palette, Shield, Monitor, Database, X, Keyboard } from "lucide-react";
 import { THEMES, Theme } from "../themes";
 import { exportVault, importVault, importCsv, enableAutostart, disableAutostart, changeMasterPassword } from "../api";
 import MasterPasswordMeter from "./MasterPasswordMeter";
+import ConfirmDialog from "./ConfirmDialog";
 
 const TIMEOUT_OPTIONS = [
   { label: "1 min",  ms: 1 * 60 * 1000 },
@@ -41,14 +42,18 @@ export default function SettingsModal({
     } catch (e) { console.error("Autostart toggle failed:", e); }
   };
 
+  const [confirmImport, setConfirmImport] = useState(false);
+  const [importError, setImportError] = useState("");
+
   const handleExport = async () => {
     try { await exportVault(); } catch (e) { console.error("Export failed:", e); }
   };
 
   const handleImport = async () => {
-    if (!window.confirm("Importing a vault will replace your current vault and lock the app. Continue?")) return;
+    setConfirmImport(false);
+    setImportError("");
     try { if (await importVault()) onImported(); }
-    catch (e) { window.alert(`Import failed: ${e}`); }
+    catch (e: any) { setImportError(e?.toString() ?? "Import failed."); }
   };
 
   return (
@@ -136,16 +141,28 @@ export default function SettingsModal({
                 <button className="btn-ghost" style={{ fontSize: "13px", padding: "6px 14px" }} onClick={handleExport} title="Save an encrypted backup">
                   Export
                 </button>
-                <button className="btn-ghost" style={{ fontSize: "13px", padding: "6px 14px" }} onClick={handleImport} title="Restore from an encrypted backup">
+                <button className="btn-ghost" style={{ fontSize: "13px", padding: "6px 14px" }} onClick={() => { setImportError(""); setConfirmImport(true); }} title="Restore from an encrypted backup">
                   Import
                 </button>
               </div>
             </Row>
+            {importError && <p className="error" style={{ margin: "0 0 12px", fontSize: "12px" }}>{importError}</p>}
             <CsvImportRow onImported={onCsvImported} />
           </Section>
 
         </div>
       </div>
+
+      {confirmImport && (
+        <ConfirmDialog
+          title="Replace current vault?"
+          message="Importing a backup replaces your current vault and locks the app. Your existing vault is saved as vault.enc.bak first, and you'll unlock with the backup's master password."
+          confirmLabel="Import backup"
+          danger
+          onConfirm={handleImport}
+          onCancel={() => setConfirmImport(false)}
+        />
+      )}
     </div>
   );
 }

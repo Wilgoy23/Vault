@@ -1,12 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Lock, Settings, ShieldCheck } from "lucide-react";
-import { listEntries, listFolders, lock, isAutostartEnabled, addFolder, renameFolder, deleteFolder } from "../api";
+import { listEntries, listFolders, lock, isAutostartEnabled, addFolder, renameFolder, deleteFolder, deleteEntry } from "../api";
 import { Entry, Folder } from "../types";
 import EntryList from "./EntryList";
 import EntryDetail from "./EntryDetail";
 import AddEntryModal from "./AddEntryModal";
 import SettingsModal from "./SettingsModal";
 import SecurityView from "./SecurityView";
+import UndoToast from "./UndoToast";
+
+const UNDO_WINDOW_MS = 5000;
+
+/** A delete that has been applied to the UI but not yet to the vault. */
+interface PendingDelete {
+  timer: number;
+  commit: () => Promise<void>;
+  restore: () => void;
+}
 
 interface Props {
   onLocked: () => void;
@@ -29,6 +39,8 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
   const [showSecurity, setShowSecurity] = useState(false);
   const [autostart, setAutostart] = useState(false);
   const [editTrigger, setEditTrigger] = useState(0);
+  const [undoToast, setUndoToast] = useState<{ message: string; deadline: number } | null>(null);
+  const pendingDelete = useRef<PendingDelete | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const filteredEntries = useMemo(() => {
@@ -88,7 +100,43 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
     isAutostartEnabled().then(setAutostart).catch(() => {});
   }, []);
 
-  const handleLock = async () => { await lock(); onLocked(); };
+  // ── Deferred deletion with Undo ──────────────────────────────────────────
+  // The item leaves the UI immediately; the vault write happens after the
+  // undo window closes (or right away if another delete/lock supersedes it).
+
+  const commitPendingDelete = () => {
+    const p = pendingDelete.current;
+    if (!p) return Promise.resolve();
+    pendingDelete.current = null;
+    clearTimeout(p.timer);
+    setUndoToast(null);
+    return p.commit().catch(() => p.restore());
+  };
+
+  const scheduleDelete = (message: string, commit: () => Promise<void>, restore: () => void) => {
+    commitPendingDelete();
+    const timer = window.setTimeout(() => { commitPendingDelete(); }, UNDO_WINDOW_MS);
+    pendingDelete.current = { timer, commit, restore };
+    setUndoToast({ message, deadline: Date.now() + UNDO_WINDOW_MS });
+  };
+
+  const undoDelete = () => {
+    const p = pendingDelete.current;
+    if (!p) return;
+    pendingDelete.current = null;
+    clearTimeout(p.timer);
+    setUndoToast(null);
+    p.restore();
+  };
+
+  // Don't let a pending delete evaporate when this view goes away
+  useEffect(() => () => { commitPendingDelete(); }, []);
+
+  const handleLock = async () => {
+    await commitPendingDelete();
+    await lock();
+    onLocked();
+  };
 
   const handleAdded = (entry: Entry) => {
     setEntries((prev) => [...prev, entry]);
@@ -109,8 +157,23 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
   };
 
   const handleDeleted = (id: string) => {
+    const index = entries.findIndex((e) => e.id === id);
+    if (index === -1) return;
+    const entry = entries[index];
     setEntries((prev) => prev.filter((e) => e.id !== id));
     setSelected(null);
+    scheduleDelete(
+      `Deleted “${entry.name}”`,
+      () => deleteEntry(id),
+      () => {
+        setEntries((prev) => {
+          const next = [...prev];
+          next.splice(Math.min(index, next.length), 0, entry);
+          return next;
+        });
+        setSelected(entry);
+      }
+    );
   };
 
   const handleFolderAdded = async (name: string) => {
@@ -124,11 +187,23 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
     setFolders((prev) => prev.map((f) => (f.id === id ? { ...f, name } : f)));
   };
 
-  const handleFolderDeleted = async (id: string) => {
-    await deleteFolder(id);
+  const handleFolderDeleted = (id: string) => {
+    const folder = folders.find((f) => f.id === id);
+    if (!folder) return;
+    const memberIds = new Set(entries.filter((e) => e.folder_id === id).map((e) => e.id));
+    const wasActive = activeFolder === id;
     setFolders((prev) => prev.filter((f) => f.id !== id));
     setEntries((prev) => prev.map((e) => e.folder_id === id ? { ...e, folder_id: undefined } : e));
-    if (activeFolder === id) setActiveFolder(null);
+    if (wasActive) setActiveFolder(null);
+    scheduleDelete(
+      `Deleted folder “${folder.name}”`,
+      () => deleteFolder(id),
+      () => {
+        setFolders((prev) => [...prev, folder]);
+        setEntries((prev) => prev.map((e) => memberIds.has(e.id) ? { ...e, folder_id: id } : e));
+        if (wasActive) setActiveFolder(id);
+      }
+    );
   };
 
   return (
@@ -229,6 +304,10 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
           onAdded={handleAdded}
           onClose={() => setShowAdd(false)}
         />
+      )}
+
+      {undoToast && (
+        <UndoToast message={undoToast.message} deadline={undoToast.deadline} onUndo={undoDelete} />
       )}
 
       {showSettings && (
