@@ -11,29 +11,16 @@
   },
   "app": {
     "windows": [
-  {
-    "label": "main",
-    "title": "Vault",
-    "width": 900,
-    "height": 600,
-    "minWidth": 700,
-    "minHeight": 400,
-    "center": true
-  },
-  {
-    "label": "overlay",
-    "title": "Vault — Quick Access",
-    "width": 480,
-    "height": 400,
-    "decorations": false,
-    "alwaysOnTop": true,
-    "visible": false,
-    "center": true,
-    "skipTaskbar": true,
-    "resizable": false,
-    "shadow": true
-  }
-],
+      {
+        "label": "main",
+        "title": "Vault",
+        "width": 900,
+        "height": 600,
+        "minWidth": 700,
+        "minHeight": 400,
+        "center": true
+      }
+    ],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'"
     }
@@ -41,6 +28,9 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi", "deb", "appimage", "rpm", "dmg", "app"],
+    "iOS": {
+      "minimumSystemVersion": "13.0"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

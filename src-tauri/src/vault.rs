@@ -58,12 +58,31 @@ struct VaultFile {
     ciphertext: String,
 }
 
+/// On mobile, the vault directory is set at startup from Tauri's
+/// app-data path (the iOS/Android app sandbox). Desktop keeps the
+/// historical `<config_dir>/vault/` location so existing vaults load.
+static VAULT_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+pub fn set_vault_dir(dir: PathBuf) {
+    let _ = VAULT_DIR.set(dir);
+}
+
 fn vault_path() -> Result<PathBuf, String> {
-    let mut path = dirs::config_dir()
-        .ok_or("Could not determine the system config directory")?;
-    path.push("vault");
-    path.push("vault.enc");
-    Ok(path)
+    if let Some(dir) = VAULT_DIR.get() {
+        return Ok(dir.join("vault.enc"));
+    }
+    #[cfg(desktop)]
+    {
+        let mut path = dirs::config_dir()
+            .ok_or("Could not determine the system config directory")?;
+        path.push("vault");
+        path.push("vault.enc");
+        Ok(path)
+    }
+    #[cfg(mobile)]
+    {
+        Err("Vault storage directory has not been initialised".into())
+    }
 }
 
 /// Writes the vault file atomically: write to a temp file in the same

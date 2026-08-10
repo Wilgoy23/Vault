@@ -33,10 +33,15 @@ zeroize = { version = "1", features = ["derive"] }
 base64 = "0.22"
 csv = "1"
 uuid = { version = "1", features = ["v4"] }
-dirs = "5"
-arboard = "3"
 
+# Desktop-only
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-autostart = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-single-instance = "2"
+dirs = "5"
+arboard = "3"
+
+# Mobile-only
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+tauri-plugin-clipboard-manager = "2"
