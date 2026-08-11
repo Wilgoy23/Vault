@@ -25,12 +25,14 @@ interface Props {
   search: string;
   onSearchChange: (v: string) => void;
   searchInputRef?: RefObject<HTMLInputElement | null>;
+  /** Mobile: the list is the whole screen instead of a 240px sidebar. */
+  fullWidth?: boolean;
 }
 
 export default function EntryList({
   entries, folders, activeFolder, onFolderChange,
   onFolderAdded, onFolderRenamed, onFolderDeleted,
-  selectedId, onSelect, search, onSearchChange, searchInputRef,
+  selectedId, onSelect, search, onSearchChange, searchInputRef, fullWidth,
 }: Props) {
   const [newFolderMode, setNewFolderMode] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
@@ -86,9 +88,11 @@ export default function EntryList({
 
   return (
     <div style={{
-      width: "240px", flexShrink: 0,
+      width: fullWidth ? "100%" : "240px",
+      flex: fullWidth ? 1 : undefined,
+      flexShrink: 0,
       display: "flex", flexDirection: "column", height: "100%",
-      borderRight: "1px solid var(--border-dim)",
+      borderRight: fullWidth ? "none" : "1px solid var(--border-dim)",
       background: "rgba(4,11,22,0.55)",
       backdropFilter: "blur(8px)",
       WebkitBackdropFilter: "blur(8px)",

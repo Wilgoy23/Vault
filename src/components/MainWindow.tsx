@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Lock, Settings, ShieldCheck } from "lucide-react";
+import { Plus, Lock, Settings, ShieldCheck, ArrowLeft } from "lucide-react";
+import { useIsMobile } from "../utils/platform";
 import { listEntries, listFolders, lock, isAutostartEnabled, addFolder, renameFolder, deleteFolder, deleteEntry } from "../api";
 import { Entry, Folder } from "../types";
 import EntryList from "./EntryList";
@@ -42,6 +43,7 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
   const [undoToast, setUndoToast] = useState<{ message: string; deadline: number } | null>(null);
   const pendingDelete = useRef<PendingDelete | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const isMobile = useIsMobile();
 
   const filteredEntries = useMemo(() => {
     const q = search.toLowerCase();
@@ -209,13 +211,18 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
       {/* Titlebar */}
-      <div className="glass" style={{
+      <div className="glass titlebar" style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
         padding: "0 14px", height: "48px",
         borderLeft: "none", borderRight: "none", borderTop: "none",
         flexShrink: 0,
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          {isMobile && selected && (
+            <button className="btn-icon" onClick={() => setSelected(null)} title="Back">
+              <ArrowLeft size={16} strokeWidth={2} />
+            </button>
+          )}
           <div className="wordmark-logo">
             <svg width="13" height="14" viewBox="0 0 13 14" fill="none">
               <path d="M6.5 1.2L1.5 3.2V7C1.5 9.8 3.7 12.2 6.5 12.8C9.3 12.2 11.5 9.8 11.5 7V3.2L6.5 1.2Z" fill="white" fillOpacity="0.95"/>
@@ -267,20 +274,25 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
         </div>
       ) : (
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        <EntryList
-          entries={entries}
-          folders={folders}
-          activeFolder={activeFolder}
-          onFolderChange={setActiveFolder}
-          onFolderAdded={handleFolderAdded}
-          onFolderRenamed={handleFolderRenamed}
-          onFolderDeleted={handleFolderDeleted}
-          selectedId={selected?.id ?? null}
-          onSelect={setSelected}
-          search={search}
-          onSearchChange={setSearch}
-          searchInputRef={searchInputRef}
-        />
+        {/* Mobile: list and detail are separate screens; desktop: side by side */}
+        {(!isMobile || !selected) && (
+          <EntryList
+            entries={entries}
+            folders={folders}
+            activeFolder={activeFolder}
+            onFolderChange={setActiveFolder}
+            onFolderAdded={handleFolderAdded}
+            onFolderRenamed={handleFolderRenamed}
+            onFolderDeleted={handleFolderDeleted}
+            selectedId={selected?.id ?? null}
+            onSelect={setSelected}
+            search={search}
+            onSearchChange={setSearch}
+            searchInputRef={searchInputRef}
+            fullWidth={isMobile}
+          />
+        )}
+        {(!isMobile || selected) && (
         <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
           {selected
             ? <EntryDetail entry={selected} folders={folders} onUpdated={handleUpdated} onDeleted={handleDeleted} editTrigger={editTrigger} />
@@ -293,6 +305,7 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
             )
           }
         </div>
+        )}
       </div>
       )}
 

@@ -4,6 +4,7 @@ import { THEMES, Theme } from "../themes";
 import { exportVault, importVault, importCsv, enableAutostart, disableAutostart, changeMasterPassword } from "../api";
 import MasterPasswordMeter from "./MasterPasswordMeter";
 import ConfirmDialog from "./ConfirmDialog";
+import { useIsMobile } from "../utils/platform";
 
 const TIMEOUT_OPTIONS = [
   { label: "1 min",  ms: 1 * 60 * 1000 },
@@ -44,9 +45,17 @@ export default function SettingsModal({
 
   const [confirmImport, setConfirmImport] = useState(false);
   const [importError, setImportError] = useState("");
+  const [exportStatus, setExportStatus] = useState("");
+  const isMobile = useIsMobile();
 
   const handleExport = async () => {
-    try { await exportVault(); } catch (e) { console.error("Export failed:", e); }
+    setExportStatus("");
+    try {
+      if (await exportVault() && isMobile) {
+        // No save dialog on mobile — the backup lands in the Files app
+        setExportStatus("Saved to Files → Vault → vault-backup.enc");
+      }
+    } catch (e) { console.error("Export failed:", e); }
   };
 
   const handleImport = async () => {
@@ -66,7 +75,7 @@ export default function SettingsModal({
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div className="glass" style={{
-        borderRadius: "var(--radius-lg)", width: "480px", maxHeight: "80vh",
+        borderRadius: "var(--radius-lg)", width: "min(480px, calc(100vw - 24px))", maxHeight: "80vh",
         overflow: "hidden", display: "flex", flexDirection: "column",
         boxShadow: "0 8px 48px rgba(0,0,0,0.6), 0 0 80px rgba(30,80,200,0.08)",
       }}>
@@ -117,21 +126,26 @@ export default function SettingsModal({
             <ChangeMasterPassword />
           </Section>
 
-          <Divider />
+          {/* Desktop-only: autostart + global overlay shortcut don't exist on mobile */}
+          {!isMobile && (
+            <>
+              <Divider />
 
-          <Section icon={<Monitor size={13} strokeWidth={2} />} label="System">
-            <Row label="Launch on startup">
-              <Toggle active={autostart} onToggle={handleAutostartToggle} />
-            </Row>
-          </Section>
+              <Section icon={<Monitor size={13} strokeWidth={2} />} label="System">
+                <Row label="Launch on startup">
+                  <Toggle active={autostart} onToggle={handleAutostartToggle} />
+                </Row>
+              </Section>
 
-          <Divider />
+              <Divider />
 
-          <Section icon={<Keyboard size={13} strokeWidth={2} />} label="Shortcuts">
-            <Row label="Open overlay">
-              <KeybindRecorder value={shortcut} onChange={onShortcutChange} />
-            </Row>
-          </Section>
+              <Section icon={<Keyboard size={13} strokeWidth={2} />} label="Shortcuts">
+                <Row label="Open overlay">
+                  <KeybindRecorder value={shortcut} onChange={onShortcutChange} />
+                </Row>
+              </Section>
+            </>
+          )}
 
           <Divider />
 
@@ -146,6 +160,7 @@ export default function SettingsModal({
                 </button>
               </div>
             </Row>
+            {exportStatus && <p style={{ margin: "0 0 12px", fontSize: "12px", color: "var(--success)" }}>{exportStatus}</p>}
             {importError && <p className="error" style={{ margin: "0 0 12px", fontSize: "12px" }}>{importError}</p>}
             <CsvImportRow onImported={onCsvImported} />
           </Section>

@@ -6,7 +6,7 @@ import { isUnlocked, listEntries, unlock, writeClipboardText, scheduleClipboardC
 import { Entry } from "./types";
 import { generateTOTP, totpSecondsLeft } from "./utils/totp";
 import { applyTheme, DEFAULT_THEME_ID } from "./themes";
-import "./App.css";
+import "./app.css";
 
 const AV_CLASSES = [
   "av-blue", "av-purple", "av-green", "av-red", "av-orange",

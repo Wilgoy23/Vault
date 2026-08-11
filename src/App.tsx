@@ -5,8 +5,9 @@ import { vaultExists, isUnlocked, lock, getOverlayShortcut, setOverlayShortcut }
 import LockScreen from "./components/LockScreen";
 import MainWindow from "./components/MainWindow";
 import { useAutoLock } from "./utils/useAutoLock";
+import { useIsMobile } from "./utils/platform";
 import { applyTheme, DEFAULT_THEME_ID } from "./themes";
-import "./App.css";
+import "./app.css";
 
 type Screen = "loading" | "lock" | "main";
 
@@ -88,6 +89,7 @@ function ContextMenu() {
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>("loading");
+  const isMobile = useIsMobile();
 
   const [timeoutMs, setTimeoutMs] = useState<number>(() => {
     const saved = localStorage.getItem(TIMEOUT_KEY);
@@ -152,7 +154,7 @@ export default function App() {
   if (screen === "loading") {
     return (
       <>
-        <ContextMenu />
+        {!isMobile && <ContextMenu />}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh" }}>
           <span style={{ color: "var(--muted)" }}>Loading…</span>
         </div>
@@ -163,7 +165,7 @@ export default function App() {
   if (screen === "lock") {
     return (
       <>
-        <ContextMenu />
+        {!isMobile && <ContextMenu />}
         <LockScreen onUnlocked={() => setScreen("main")} />
       </>
     );
@@ -171,7 +173,7 @@ export default function App() {
 
   return (
     <>
-      <ContextMenu />
+      {!isMobile && <ContextMenu />}
       <MainWindow
         onLocked={handleLock}
         timeoutMs={timeoutMs}
