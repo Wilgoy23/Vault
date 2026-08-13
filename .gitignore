@@ -26,5 +26,7 @@ graphify-out/
 *.njsproj
 *.sln
 *.sw?
+*.tsbuildinfo
 
 CLAUDE.md
+IOS_BUILD.md
