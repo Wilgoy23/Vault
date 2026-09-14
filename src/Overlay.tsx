@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { emit } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { Eye, EyeOff, ArrowLeft } from "lucide-react";
 import { isUnlocked, listEntries, unlock, writeClipboardText, scheduleClipboardClear, markEntryUsed } from "./api";
 import { Entry } from "./types";
@@ -180,8 +180,7 @@ function EntryDetail({ entry, onClose }: { entry: Entry; onClose: () => void }) 
           copy("password", entry.password);
           break;
         case "e":
-          e.preventDefault();
-          copy("email", entry.email);
+          if (entry.email) { e.preventDefault(); copy("email", entry.email); }
           break;
         case "u":
           if (entry.username) { e.preventDefault(); copy("username", entry.username); }
@@ -250,7 +249,7 @@ function EntryDetail({ entry, onClose }: { entry: Entry; onClose: () => void }) 
           background: "rgba(255,255,255,0.03)", margin: "10px",
           borderRadius: "var(--r-md)", overflow: "hidden", border: "1px solid var(--border-dim)",
         }}>
-          {fieldRow("Email",
+          {entry.email && fieldRow("Email",
             <span style={{ fontSize: "13px", color: copied === "email" ? "var(--success)" : "var(--fg-mid)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", transition: "color 0.2s" }}>
               {entry.email}
             </span>
@@ -310,7 +309,7 @@ function EntryDetail({ entry, onClose }: { entry: Entry; onClose: () => void }) 
         color: "var(--muted-dim)", fontSize: "10.5px", flexShrink: 0,
       }}>
         <span><kbd style={kbdStyle}>Enter</kbd> password</span>
-        <span><kbd style={kbdStyle}>E</kbd> email</span>
+        {entry.email && <span><kbd style={kbdStyle}>E</kbd> email</span>}
         {entry.username && <span><kbd style={kbdStyle}>U</kbd> username</span>}
         {entry.totp_secret && <span><kbd style={kbdStyle}>T</kbd> 2FA</span>}
         <span><kbd style={kbdStyle}>V</kbd> reveal</span>
@@ -363,12 +362,27 @@ export default function Overlay() {
     }
   };
 
+  // Don't keep decrypted entries (or running TOTP timers) around while hidden
+  const clearEntries = () => {
+    setEntries([]);
+    setSelectedEntry(null);
+    setSearch("");
+  };
+
   useEffect(() => {
     const win = getCurrentWindow();
-    const unlisten = win.onFocusChanged(({ payload: focused }) => {
+    const unlistenFocus = win.onFocusChanged(({ payload: focused }) => {
       if (focused) resetAndLoad();
+      else clearEntries();
     });
-    return () => { unlisten.then((f) => f()); };
+    const unlistenLocked = listen("vault-locked", () => {
+      clearEntries();
+      setLocked(true);
+    });
+    return () => {
+      unlistenFocus.then((f) => f());
+      unlistenLocked.then((f) => f());
+    };
   }, []);
 
   const handleUnlock = async (e: React.FormEvent) => {
@@ -395,7 +409,8 @@ export default function Overlay() {
     .filter(
       (e) =>
         e.name.toLowerCase().includes(search.toLowerCase()) ||
-        e.email.toLowerCase().includes(search.toLowerCase())
+        e.email.toLowerCase().includes(search.toLowerCase()) ||
+        (e.username ?? "").toLowerCase().includes(search.toLowerCase())
     )
     .sort((a, b) => frecency(b) - frecency(a));
 
@@ -508,7 +523,7 @@ export default function Overlay() {
                       {entry.name}
                     </div>
                     <div style={{ color: "var(--muted)", fontSize: "11.5px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {entry.email}
+                      {entry.email || entry.username}
                     </div>
                   </div>
                   {entry.totp_secret && <TotpBadge secret={entry.totp_secret} />}

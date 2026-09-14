@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { vaultExists, isUnlocked, lock, getOverlayShortcut, setOverlayShortcut } from "./api";
+import { vaultExists, isUnlocked, getOverlayShortcut, setOverlayShortcut } from "./api";
 import LockScreen from "./components/LockScreen";
 import MainWindow from "./components/MainWindow";
-import { useAutoLock } from "./utils/useAutoLock";
 import { useIsMobile } from "./utils/platform";
 import { applyTheme, DEFAULT_THEME_ID } from "./themes";
 import "./app.css";
@@ -21,6 +20,9 @@ function ContextMenu() {
 
   useEffect(() => {
     const onContext = (e: MouseEvent) => {
+      // Leave the native menu (Paste, etc.) on text fields
+      const target = e.target as HTMLElement;
+      if (target.closest("input, textarea, [contenteditable='true']")) return;
       e.preventDefault();
       setPos({ x: e.clientX, y: e.clientY });
     };
@@ -120,11 +122,6 @@ export default function App() {
     })();
   }, []);
 
-  const handleLock = async () => {
-    await lock();
-    setScreen("lock");
-  };
-
   const handleTimeoutChange = (ms: number) => {
     setTimeoutMs(ms);
     localStorage.setItem(TIMEOUT_KEY, String(ms));
@@ -135,21 +132,21 @@ export default function App() {
     localStorage.setItem(THEME_KEY, id);
   };
 
+  // Throws on failure so Settings can show why the shortcut was rejected
   const handleShortcutChange = async (s: string) => {
-    try {
-      await setOverlayShortcut(s);
-      setShortcut(s);
-    } catch (e) {
-      console.error("Failed to set shortcut:", e);
-    }
+    await setOverlayShortcut(s);
+    setShortcut(s);
   };
 
   useEffect(() => {
-    const unlisten = listen("vault-unlocked", () => setScreen("main"));
-    return () => { unlisten.then((f) => f()); };
+    const unlistenUnlocked = listen("vault-unlocked", () => setScreen("main"));
+    // Locks from the tray, the overlay, or a backup import
+    const unlistenLocked = listen("vault-locked", () => setScreen("lock"));
+    return () => {
+      unlistenUnlocked.then((f) => f());
+      unlistenLocked.then((f) => f());
+    };
   }, []);
-
-  useAutoLock(timeoutMs, handleLock, screen === "main");
 
   if (screen === "loading") {
     return (
@@ -175,7 +172,7 @@ export default function App() {
     <>
       {!isMobile && <ContextMenu />}
       <MainWindow
-        onLocked={handleLock}
+        onLocked={() => setScreen("lock")}
         timeoutMs={timeoutMs}
         onTimeoutChange={handleTimeoutChange}
         themeId={themeId}

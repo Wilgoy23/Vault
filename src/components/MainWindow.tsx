@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Lock, Settings, ShieldCheck, ArrowLeft } from "lucide-react";
 import { useIsMobile } from "../utils/platform";
+import { useAutoLock } from "../utils/useAutoLock";
 import { listEntries, listFolders, lock, isAutostartEnabled, addFolder, renameFolder, deleteFolder, deleteEntry } from "../api";
 import { Entry, Folder } from "../types";
 import EntryList from "./EntryList";
@@ -26,7 +27,7 @@ interface Props {
   themeId: string;
   onThemeChange: (id: string) => void;
   shortcut: string;
-  onShortcutChange: (s: string) => void;
+  onShortcutChange: (s: string) => Promise<void>;
 }
 
 export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, themeId, onThemeChange, shortcut, onShortcutChange }: Props) {
@@ -139,6 +140,9 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
     await lock();
     onLocked();
   };
+
+  // Lives here rather than in App so a pending delete is flushed before locking
+  useAutoLock(timeoutMs, handleLock, true);
 
   const handleAdded = (entry: Entry) => {
     setEntries((prev) => [...prev, entry]);

@@ -23,7 +23,7 @@ interface Props {
   autostart: boolean;
   onAutostartChange: (v: boolean) => void;
   shortcut: string;
-  onShortcutChange: (s: string) => void;
+  onShortcutChange: (s: string) => Promise<void>;
   onImported: () => void;
   onCsvImported: () => void;
   onClose: () => void;
@@ -47,6 +47,13 @@ export default function SettingsModal({
   const [importError, setImportError] = useState("");
   const [exportStatus, setExportStatus] = useState("");
   const isMobile = useIsMobile();
+
+  useEffect(() => {
+    if (confirmImport) return; // the confirm dialog handles its own Escape
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [confirmImport, onClose]);
 
   const handleExport = async () => {
     setExportStatus("");
@@ -384,14 +391,17 @@ function ThemeSwatch({ theme, active, onSelect }: { theme: Theme; active: boolea
   );
 }
 
-function KeybindRecorder({ value, onChange }: { value: string; onChange: (s: string) => void }) {
+function KeybindRecorder({ value, onChange }: { value: string; onChange: (s: string) => Promise<void> }) {
   const [recording, setRecording] = useState(false);
+  const [error, setError] = useState("");
   const btnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!recording) return;
     const onKeyDown = (e: KeyboardEvent) => {
       e.preventDefault();
+      // Keep Escape from also closing the Settings modal
+      e.stopPropagation();
       if (e.key === "Escape") { setRecording(false); return; }
       const isModifierOnly = ["Control", "Alt", "Shift", "Meta"].includes(e.key);
       if (isModifierOnly) return;
@@ -405,18 +415,27 @@ function KeybindRecorder({ value, onChange }: { value: string; onChange: (s: str
         .replace(/^Key/, "")
         .replace(/^Digit/, "")
         .replace(/^Arrow/, "Arrow");
-      onChange([...mods, key].join("+"));
+      // A bare key (or Shift+key) as a global hotkey would swallow normal typing
+      const isFunctionKey = /^F([1-9]|1[0-9]|2[0-4])$/.test(key);
+      if (!e.ctrlKey && !e.altKey && !e.metaKey && !isFunctionKey) {
+        setError("Include Ctrl, Alt or Win — or use an F-key.");
+        return;
+      }
       setRecording(false);
+      onChange([...mods, key].join("+"))
+        .then(() => setError(""))
+        .catch((err) => setError(err?.toString() ?? "Could not set shortcut."));
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [recording, onChange]);
 
   return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "4px" }}>
     <button
       ref={btnRef}
       className="btn-ghost"
-      onClick={() => setRecording(true)}
+      onClick={() => { setError(""); setRecording(true); }}
       style={{
         fontSize: "12.5px", padding: "5px 14px",
         fontFamily: "var(--mono)", minWidth: "130px",
@@ -427,6 +446,8 @@ function KeybindRecorder({ value, onChange }: { value: string; onChange: (s: str
     >
       {recording ? "Press keys…" : value}
     </button>
+    {error && <span className="error" style={{ fontSize: "11.5px", maxWidth: "220px", textAlign: "right" }}>{error}</span>}
+    </div>
   );
 }
 
