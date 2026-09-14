@@ -10,7 +10,7 @@ mod csv_import;
 mod vault;
 
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use vault::{Entry, Folder, VaultData};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -59,25 +59,54 @@ fn str_to_code(s: &str) -> Option<Code> {
         "insert" | "ins" => Some(Code::Insert), "home" => Some(Code::Home),
         "end" => Some(Code::End), "pageup" => Some(Code::PageUp),
         "pagedown" => Some(Code::PageDown),
+        "arrowup" | "up" => Some(Code::ArrowUp), "arrowdown" | "down" => Some(Code::ArrowDown),
+        "arrowleft" | "left" => Some(Code::ArrowLeft), "arrowright" | "right" => Some(Code::ArrowRight),
+        "minus" => Some(Code::Minus), "equal" => Some(Code::Equal),
+        "comma" => Some(Code::Comma), "period" => Some(Code::Period),
+        "slash" => Some(Code::Slash), "backslash" => Some(Code::Backslash),
+        "semicolon" => Some(Code::Semicolon), "quote" => Some(Code::Quote),
+        "backquote" => Some(Code::Backquote),
+        "bracketleft" => Some(Code::BracketLeft), "bracketright" => Some(Code::BracketRight),
         _ => None,
     }
 }
 
+/// Function keys are the only keys safe to bind without a modifier; a bare
+/// letter/digit/punctuation hotkey would swallow that key system-wide.
 #[cfg(desktop)]
-fn parse_shortcut_str(s: &str) -> Option<Shortcut> {
-    let parts: Vec<&str> = s.split('+').collect();
+fn is_function_key(code: Code) -> bool {
+    matches!(
+        code,
+        Code::F1 | Code::F2 | Code::F3 | Code::F4 | Code::F5 | Code::F6
+            | Code::F7 | Code::F8 | Code::F9 | Code::F10 | Code::F11 | Code::F12
+    )
+}
+
+/// Parses "Ctrl+Shift+P" style strings. Returns an error message describing
+/// why a string was rejected so the UI can show it.
+#[cfg(desktop)]
+fn parse_shortcut_str(s: &str) -> Result<Shortcut, String> {
     let mut mods = Modifiers::empty();
     let mut code: Option<Code> = None;
-    for part in &parts {
-        match part.to_lowercase().as_str() {
+    for part in s.split('+') {
+        match part.trim().to_lowercase().as_str() {
             "ctrl" | "control" => mods |= Modifiers::CONTROL,
             "shift"            => mods |= Modifiers::SHIFT,
             "alt"              => mods |= Modifiers::ALT,
             "meta" | "win" | "cmd" | "super" => mods |= Modifiers::META,
-            key => { code = str_to_code(key); }
+            key => {
+                code = Some(str_to_code(key).ok_or_else(|| format!("Unsupported key: {part}"))?);
+            }
         }
     }
-    code.map(|c| Shortcut::new(if mods.is_empty() { None } else { Some(mods) }, c))
+    let code = code.ok_or_else(|| "Shortcut needs a key".to_string())?;
+    // Shift alone still leaves the key typeable in most apps, so require a
+    // "real" modifier for anything that isn't a function key.
+    let has_real_modifier = mods.intersects(Modifiers::CONTROL | Modifiers::ALT | Modifiers::META);
+    if !has_real_modifier && !is_function_key(code) {
+        return Err("Shortcut needs Ctrl, Alt or Win/Cmd (or use an F-key)".into());
+    }
+    Ok(Shortcut::new(if mods.is_empty() { None } else { Some(mods) }, code))
 }
 
 #[cfg(desktop)]
@@ -167,12 +196,21 @@ fn change_master_password(
     Ok(())
 }
 
+/// Clears the session and tells every window so none keeps showing (or
+/// holding in JS memory) entries that the backend has already scrubbed.
+fn lock_and_notify(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<VaultState>() {
+        let mut s = state.lock().unwrap();
+        // Dropping these zeroizes the key and all decrypted entries
+        s.key = None;
+        s.data = None;
+    }
+    let _ = app.emit("vault-locked", ());
+}
+
 #[tauri::command]
-fn lock(state: State<VaultState>) {
-    let mut s = state.lock().unwrap();
-    // Dropping these zeroizes the key and all decrypted entries
-    s.key = None;
-    s.data = None;
+fn lock(app: tauri::AppHandle) {
+    lock_and_notify(&app);
 }
 
 #[tauri::command]
@@ -324,7 +362,7 @@ async fn export_vault(app: tauri::AppHandle) -> Result<bool, String> {
 }
 
 #[tauri::command]
-async fn import_vault(app: tauri::AppHandle, state: State<'_, VaultState>) -> Result<bool, String> {
+async fn import_vault(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_dialog::DialogExt;
     let Some(picked) = app
         .dialog()
@@ -338,9 +376,7 @@ async fn import_vault(app: tauri::AppHandle, state: State<'_, VaultState>) -> Re
     vault::import_vault(&src)?;
     // Clear the in-memory session so the user must re-unlock with the new
     // vault's password; dropping the fields zeroizes them
-    let mut s = state.lock().unwrap();
-    s.key = None;
-    s.data = None;
+    lock_and_notify(&app);
     Ok(true)
 }
 
@@ -419,55 +455,95 @@ fn is_autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
 
 // ── Clipboard ─────────────────────────────────────────────────────────────────
 
-struct ClipboardClearGen(Mutex<u64>);
+/// Tracks the last value this app put on the clipboard: a generation counter
+/// (so an older scheduled clear doesn't cancel a newer copy) and the text
+/// itself (so we never wipe something the user copied from another app in
+/// the meantime). The text zeroizes when replaced or dropped.
+struct ClipboardClearGen(Mutex<(u64, Option<Zeroizing<String>>)>);
 
 /// Desktop: writes via arboard so sensitive values can be excluded from
 /// Windows' clipboard history / cloud sync. Mobile: uses the
 /// clipboard-manager plugin (iOS/Android system pasteboard).
 #[tauri::command]
-fn write_clipboard_text(app: tauri::AppHandle, text: String) -> Result<(), String> {
+fn write_clipboard_text(
+    app: tauri::AppHandle,
+    state: State<ClipboardClearGen>,
+    text: String,
+) -> Result<(), String> {
+    let text = Zeroizing::new(text);
+
     #[cfg(desktop)]
     {
-        let _ = app;
+        let _ = &app;
         let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
 
         #[cfg(target_os = "windows")]
         {
             use arboard::SetExtWindows;
-            cb.set().exclude_from_monitoring().text(text).map_err(|e| e.to_string())?;
+            cb.set().exclude_from_monitoring().text(text.as_str()).map_err(|e| e.to_string())?;
         }
 
         #[cfg(not(target_os = "windows"))]
         {
-            cb.set_text(text).map_err(|e| e.to_string())?;
+            cb.set_text(text.as_str()).map_err(|e| e.to_string())?;
         }
-
-        Ok(())
     }
 
     #[cfg(mobile)]
     {
         use tauri_plugin_clipboard_manager::ClipboardExt;
-        app.clipboard().write_text(text).map_err(|e| e.to_string())
+        app.clipboard().write_text(text.as_str()).map_err(|e| e.to_string())?;
+    }
+
+    state.0.lock().unwrap().1 = Some(text);
+    Ok(())
+}
+
+/// Reads the current clipboard text, if any.
+fn read_clipboard_text(app: &tauri::AppHandle) -> Option<Zeroizing<String>> {
+    #[cfg(desktop)]
+    {
+        let _ = app;
+        arboard::Clipboard::new().ok()?.get_text().ok().map(Zeroizing::new)
+    }
+    #[cfg(mobile)]
+    {
+        use tauri_plugin_clipboard_manager::ClipboardExt;
+        app.clipboard().read_text().ok().map(Zeroizing::new)
     }
 }
 
 /// Clears the clipboard after `seconds`, unless a newer copy has been made
-/// in the meantime. Runs on a background thread so it fires reliably even
-/// when the window is hidden/unfocused and JS timers get throttled.
+/// in the meantime or the clipboard no longer holds what we put there.
+/// Runs on a background thread so it fires reliably even when the window
+/// is hidden/unfocused and JS timers get throttled.
 #[tauri::command]
 fn schedule_clipboard_clear(app: tauri::AppHandle, state: State<ClipboardClearGen>, seconds: u64) {
     let my_gen = {
-        let mut gen = state.0.lock().unwrap();
-        *gen += 1;
-        *gen
+        let mut g = state.0.lock().unwrap();
+        g.0 += 1;
+        g.0
     };
 
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_secs(seconds));
 
         let gen_state = app.state::<ClipboardClearGen>();
-        if *gen_state.0.lock().unwrap() != my_gen {
+        let ours = {
+            let mut g = gen_state.0.lock().unwrap();
+            if g.0 != my_gen {
+                return;
+            }
+            g.1.take()
+        };
+
+        // Only clear if the clipboard still contains our value. If the user
+        // copied something else since, leave it alone.
+        let still_ours = match (ours, read_clipboard_text(&app)) {
+            (Some(ours), Some(current)) => *ours == *current,
+            _ => false,
+        };
+        if !still_ours {
             return;
         }
 
@@ -505,34 +581,53 @@ fn set_overlay_shortcut(
 
     #[cfg(desktop)]
     {
-        let new_sc = parse_shortcut_str(&shortcut_str)
-            .ok_or_else(|| format!("Invalid shortcut: {shortcut_str}"))?;
+        let new_sc = parse_shortcut_str(&shortcut_str)?;
 
-        // Unregister the current shortcut
         let old_str = shortcut_state.0.lock().unwrap().clone();
-        if let Some(old_sc) = parse_shortcut_str(&old_str) {
-            let _ = app.global_shortcut().unregister(old_sc);
+        let old_sc = parse_shortcut_str(&old_str).ok();
+        if old_sc == Some(new_sc) {
+            return Ok(());
         }
 
-        // Register the new shortcut with the same toggle handler
-        let app_handle = app.clone();
-        app.global_shortcut()
-            .on_shortcut(new_sc, move |_app, _sc, event| {
-                if event.state() == SCState::Pressed {
-                    toggle_overlay(&app_handle);
-                }
-            })
-            .map_err(|e| e.to_string())?;
+        // Unregister the current shortcut, then register the new one. If
+        // registration fails (e.g. another app owns that combination), put
+        // the old one back so the user is never left without a hotkey.
+        if let Some(old) = old_sc {
+            let _ = app.global_shortcut().unregister(old);
+        }
+        if let Err(e) = register_overlay_shortcut(&app, new_sc) {
+            if let Some(old) = old_sc {
+                let _ = register_overlay_shortcut(&app, old);
+            }
+            return Err(format!("Could not register shortcut: {e}"));
+        }
 
         *shortcut_state.0.lock().unwrap() = shortcut_str.clone();
 
-        // Persist to config file
-        if let Ok(data_dir) = app.path().app_data_dir() {
-            let _ = std::fs::write(data_dir.join(SHORTCUT_FILE), &shortcut_str);
-        }
+        // Persist to config file (the directory may not exist yet)
+        let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+        std::fs::write(data_dir.join(SHORTCUT_FILE), &shortcut_str)
+            .map_err(|e| format!("Shortcut active but could not be saved: {e}"))?;
 
         Ok(())
     }
+}
+
+/// Registers `shortcut` to toggle the quick-access overlay on key press only
+/// (not release — that would fire the toggle twice on Windows).
+#[cfg(desktop)]
+fn register_overlay_shortcut(
+    app: &tauri::AppHandle,
+    shortcut: Shortcut,
+) -> Result<(), tauri_plugin_global_shortcut::Error> {
+    let app_handle = app.clone();
+    app.global_shortcut()
+        .on_shortcut(shortcut, move |_app, _sc, event| {
+            if event.state() == SCState::Pressed {
+                toggle_overlay(&app_handle);
+            }
+        })
 }
 
 // ── Desktop-only setup (tray, global shortcut, overlay window) ───────────────
@@ -563,21 +658,18 @@ fn setup_desktop(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
         .and_then(|d| std::fs::read_to_string(d.join(SHORTCUT_FILE)).ok())
         .unwrap_or_else(|| DEFAULT_SHORTCUT.to_string());
 
-    // Update managed state to match what we'll actually register
-    *app.state::<OverlayShortcut>().0.lock().unwrap() = shortcut_str.clone();
+    // Fall back to the default if the persisted string is invalid, and make
+    // the managed state reflect what is actually registered.
+    let (shortcut_str, shortcut) = match parse_shortcut_str(shortcut_str.trim()) {
+        Ok(sc) => (shortcut_str.trim().to_string(), sc),
+        Err(_) => (
+            DEFAULT_SHORTCUT.to_string(),
+            Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyP),
+        ),
+    };
+    *app.state::<OverlayShortcut>().0.lock().unwrap() = shortcut_str;
 
-    let shortcut = parse_shortcut_str(&shortcut_str)
-        .unwrap_or_else(|| Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyP));
-
-    let app_handle = app.handle().clone();
-    app.global_shortcut()
-        .on_shortcut(shortcut, move |_app, _shortcut, event| {
-            // Only act on key press, not key release — prevents the toggle
-            // firing twice on Windows (once down, once up)
-            if event.state() == SCState::Pressed {
-                toggle_overlay(&app_handle);
-            }
-        })?;
+    register_overlay_shortcut(app.handle(), shortcut)?;
 
     // ── System tray ────────────────────────────────────────────────────
     let open_item = MenuItem::with_id(app, "open", "Open Vault", true, None::<&str>)?;
@@ -601,11 +693,7 @@ fn setup_desktop(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
                 }
             }
             "lock" => {
-                if let Some(state) = app.try_state::<VaultState>() {
-                    let mut s = state.lock().unwrap();
-                    s.key = None;
-                    s.data = None;
-                }
+                lock_and_notify(app);
                 // Show main window at the lock screen
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.show();
@@ -678,7 +766,7 @@ pub fn run() {
             #[cfg(mobile)]
             { String::new() }
         })))
-        .manage(ClipboardClearGen(Mutex::new(0)))
+        .manage(ClipboardClearGen(Mutex::new((0, None))))
         .invoke_handler(tauri::generate_handler![
             get_platform,
             vault_exists,
