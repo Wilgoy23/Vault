@@ -85,7 +85,7 @@ function EntryRow({ entry, detail, detailColor, onSelect }: {
           {entry.name}
         </div>
         <div style={{ color: "var(--muted-dim)", fontSize: "11px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          {entry.email}
+          {entry.email || entry.username}
         </div>
       </div>
       <span style={{ fontSize: "11px", fontWeight: 600, color: detailColor, flexShrink: 0, whiteSpace: "nowrap" }}>

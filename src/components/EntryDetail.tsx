@@ -185,8 +185,12 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
 
   const handleSave = async () => {
     setError("");
-    if (!form.name.trim() || !form.email.trim() || !form.password.trim()) {
-      setError("Name, email and password are required.");
+    if (!form.name.trim() || !form.password.trim()) {
+      setError("Name and password are required.");
+      return;
+    }
+    if (!form.email.trim() && !form.username?.trim()) {
+      setError("Enter an email or a username.");
       return;
     }
     try {
@@ -319,10 +323,10 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
             <div className="field-divider-v" />
             <div className="field-body">
               {editing
-                ? <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+                ? <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="Optional if username is set" />
                 : <>
-                    <span className="field-val">{entry.email}</span>
-                    <CopyBtn id="email" value={entry.email} copied={copied} onCopy={copy} />
+                    <span className="field-val">{entry.email || <span className="field-val muted">—</span>}</span>
+                    {entry.email && <CopyBtn id="email" value={entry.email} copied={copied} onCopy={copy} />}
                   </>
               }
             </div>

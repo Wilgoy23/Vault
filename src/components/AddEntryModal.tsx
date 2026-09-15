@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { X, ShieldCheck } from "lucide-react";
 import { addEntry } from "../api";
 import { Entry, Folder } from "../types";
@@ -29,6 +29,12 @@ export default function AddEntryModal({ folders, entries = [], defaultFolderId, 
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
   const set = (key: keyof typeof form) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
       setForm({ ...form, [key]: e.target.value });
@@ -36,8 +42,12 @@ export default function AddEntryModal({ folders, entries = [], defaultFolderId, 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    if (!form.name.trim() || !form.email.trim() || !form.password.trim()) {
-      setError("Name, email and password are required.");
+    if (!form.name.trim() || !form.password.trim()) {
+      setError("Name and password are required.");
+      return;
+    }
+    if (!form.email.trim() && !form.username.trim()) {
+      setError("Enter an email or a username.");
       return;
     }
     setLoading(true);
@@ -76,7 +86,7 @@ export default function AddEntryModal({ folders, entries = [], defaultFolderId, 
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div className="glass" style={{
-        borderRadius: "var(--radius-lg)", padding: "0", width: "420px",
+        borderRadius: "var(--radius-lg)", padding: "0", width: "min(420px, calc(100vw - 24px))",
         boxShadow: "0 8px 48px rgba(0,0,0,0.5), 0 0 60px rgba(30,80,200,0.10)",
         display: "flex", flexDirection: "column", maxHeight: "90vh",
       }}>

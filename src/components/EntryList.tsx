@@ -45,7 +45,8 @@ export default function EntryList({
   const filtered = entries.filter((e) => {
     const matchesSearch =
       e.name.toLowerCase().includes(search.toLowerCase()) ||
-      e.email.toLowerCase().includes(search.toLowerCase());
+      e.email.toLowerCase().includes(search.toLowerCase()) ||
+      (e.username ?? "").toLowerCase().includes(search.toLowerCase());
     const matchesFolder = activeFolder === null ? true : e.folder_id === activeFolder;
     return matchesSearch && matchesFolder;
   });
@@ -269,7 +270,7 @@ export default function EntryList({
                   whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                   marginTop: "2px", lineHeight: 1.2,
                 }}>
-                  {entry.email}
+                  {entry.email || entry.username}
                 </div>
               </div>
             </div>
