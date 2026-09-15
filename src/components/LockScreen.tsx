@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ShieldCheck, Lock, Eye, EyeOff, Check } from "lucide-react";
 import { createVault, unlock, vaultExists } from "../api";
 import MasterPasswordMeter from "./MasterPasswordMeter";
@@ -15,9 +15,9 @@ export default function LockScreen({ onUnlocked }: Props) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  useState(() => {
+  useEffect(() => {
     vaultExists().then((exists) => setIsNew(!exists));
-  });
+  }, []);
 
   const confirmMismatch = isNew === true && confirm.length > 0 && confirm !== password;
   const confirmMatches = isNew === true && confirm.length > 0 && confirm === password;
@@ -43,7 +43,7 @@ export default function LockScreen({ onUnlocked }: Props) {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh" }}>
       <div className="glass" style={{
-        borderRadius: "var(--radius-lg)", padding: "40px", width: "360px",
+        borderRadius: "var(--radius-lg)", padding: "40px", width: "min(360px, calc(100vw - 24px))",
         boxShadow: "0 8px 48px rgba(0,0,0,0.5), 0 0 80px rgba(30,80,200,0.12)",
       }}>
         {/* Icon + title */}

@@ -43,7 +43,7 @@ export default function ConfirmDialog({
       onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
     >
       <div className="glass" style={{
-        borderRadius: "var(--radius-lg)", padding: "20px", width: "340px",
+        borderRadius: "var(--radius-lg)", padding: "20px", width: "min(340px, calc(100vw - 24px))",
         boxShadow: "0 8px 48px rgba(0,0,0,0.6), 0 0 60px rgba(30,80,200,0.08)",
       }}>
         <div style={{ display: "flex", alignItems: "flex-start", gap: "12px", marginBottom: "16px" }}>
