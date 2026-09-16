@@ -4,15 +4,49 @@ use aes_gcm::{
 };
 use argon2::{Argon2, Params, Version};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
+use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 const SALT_LEN: usize = 32;
 const KEY_LEN: usize = 32;
 
+/// Argon2id cost parameters. Stored in the vault header so the cost can be
+/// raised for new vaults without making existing ones underivable: each vault
+/// is always unlocked with the parameters it was written with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KdfParams {
+    /// Memory cost in KiB
+    pub m_cost: u32,
+    /// Iterations
+    pub t_cost: u32,
+    /// Parallelism (lanes)
+    pub p_cost: u32,
+}
+
+/// The parameters used for vaults created from now on: 64 MiB, 3 passes,
+/// 1 lane. Vaults written before the header existed used exactly these, so
+/// this doubles as the `serde` default for a missing `kdf` field.
+pub const DEFAULT_KDF: KdfParams = KdfParams { m_cost: 65536, t_cost: 3, p_cost: 1 };
+
+impl Default for KdfParams {
+    fn default() -> Self {
+        DEFAULT_KDF
+    }
+}
+
+/// Derives a 256-bit key using the current default parameters.
+pub fn derive_key(password: &str, salt: &[u8]) -> Result<Zeroizing<[u8; KEY_LEN]>, String> {
+    derive_key_with(password, salt, DEFAULT_KDF)
+}
+
 /// Derives a 256-bit key from a master password + salt using Argon2id.
 /// The key is wrapped in `Zeroizing`, so it wipes itself when dropped.
-pub fn derive_key(password: &str, salt: &[u8]) -> Result<Zeroizing<[u8; KEY_LEN]>, String> {
-    let params = Params::new(65536, 3, 1, Some(KEY_LEN))
+pub fn derive_key_with(
+    password: &str,
+    salt: &[u8],
+    kdf: KdfParams,
+) -> Result<Zeroizing<[u8; KEY_LEN]>, String> {
+    let params = Params::new(kdf.m_cost, kdf.t_cost, kdf.p_cost, Some(KEY_LEN))
         .map_err(|e| format!("Argon2 params error: {e}"))?;
 
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
@@ -90,6 +124,22 @@ mod tests {
         let key1 = derive_key("password-one", &salt).unwrap();
         let key2 = derive_key("password-two", &salt).unwrap();
         assert_ne!(*key1, *key2);
+    }
+
+    #[test]
+    fn different_kdf_params_produce_different_keys() {
+        let salt = generate_salt();
+        let key1 = derive_key_with("same-password", &salt, DEFAULT_KDF).unwrap();
+        let cheaper = KdfParams { t_cost: DEFAULT_KDF.t_cost + 1, ..DEFAULT_KDF };
+        let key2 = derive_key_with("same-password", &salt, cheaper).unwrap();
+        assert_ne!(*key1, *key2);
+    }
+
+    #[test]
+    fn default_params_match_the_pre_header_cost() {
+        // Vaults written before the kdf header must still unlock, so these
+        // values are frozen: changing them requires a format migration.
+        assert_eq!(DEFAULT_KDF, KdfParams { m_cost: 65536, t_cost: 3, p_cost: 1 });
     }
 
     #[test]

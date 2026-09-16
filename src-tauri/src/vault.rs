@@ -15,14 +15,47 @@ pub struct Folder {
     pub name: String,
 }
 
+/// What a vault item represents. Only `Login` exists today; the field is
+/// here so secure notes and cards can be added later without a format
+/// change, and so vaults written now already carry it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EntryKind {
+    #[default]
+    Login,
+}
+
+// Not secret, but `Entry` zeroizes every field on drop and so needs this.
+impl Zeroize for EntryKind {
+    fn zeroize(&mut self) {
+        *self = EntryKind::Login;
+    }
+}
+
+/// A password this entry used to have, kept so a bad rotation can be undone.
+#[derive(Debug, Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+pub struct PastPassword {
+    pub password: String,
+    /// When this password was replaced (unix seconds)
+    pub replaced_at: u64,
+}
+
+/// How many superseded passwords to keep per entry. Old ones are dropped
+/// oldest-first so the vault cannot grow without bound.
+const MAX_PASSWORD_HISTORY: usize = 10;
+
 /// A single password entry. Zeroized on drop so plaintext secrets don't
 /// linger in freed memory (clones included).
 #[derive(Debug, Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct Entry {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub kind: EntryKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
+    /// May be empty: an entry needs either an email or a username, not both.
+    #[serde(default)]
     pub email: String,
     pub password: String,
     pub url: Option<String>,
@@ -33,6 +66,14 @@ pub struct Entry {
     pub totp_secret: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
+    /// When the password itself last changed (unix seconds). `None` on
+    /// entries written before this field existed; the audit falls back to
+    /// `updated_at` for those.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_changed_at: Option<u64>,
+    /// Superseded passwords, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub password_history: Vec<PastPassword>,
     /// When a credential from this entry was last copied (unix seconds).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_used_at: Option<u64>,
@@ -49,13 +90,42 @@ pub struct VaultData {
     pub folders: Vec<Folder>,
 }
 
+/// The format version written by this build. Version 0 is the original
+/// headerless format; files without a `version` field are read as 0 and are
+/// byte-compatible with 1, so no rewrite is needed to open them.
+const CURRENT_VERSION: u32 = 1;
+
 /// On-disk vault file format.
 #[derive(Debug, Serialize, Deserialize)]
 struct VaultFile {
+    #[serde(default)]
+    version: u32,
+    /// Argon2id cost this file's key was derived with. Missing in v0 files,
+    /// which all used the values now in `crypto::DEFAULT_KDF`.
+    #[serde(default)]
+    kdf: crypto::KdfParams,
     /// Base64-encoded Argon2id salt
     salt: String,
     /// Base64(nonce || AES-GCM ciphertext) of the JSON vault data
     ciphertext: String,
+}
+
+impl VaultFile {
+    /// A fresh header at the current version and cost.
+    fn new(salt: &[u8], ciphertext: String) -> Self {
+        VaultFile {
+            version: CURRENT_VERSION,
+            kdf: crypto::DEFAULT_KDF,
+            salt: base64::engine::general_purpose::STANDARD.encode(salt),
+            ciphertext,
+        }
+    }
+
+    fn salt_bytes(&self) -> Result<Vec<u8>, String> {
+        base64::engine::general_purpose::STANDARD
+            .decode(&self.salt)
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// On mobile, the vault directory is set at startup from Tauri's
@@ -63,6 +133,8 @@ struct VaultFile {
 /// historical `<config_dir>/vault/` location so existing vaults load.
 static VAULT_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
+// Called at startup on mobile, and by the tests to keep them off the real vault.
+#[cfg_attr(not(any(mobile, test)), allow(dead_code))]
 pub fn set_vault_dir(dir: PathBuf) {
     let _ = VAULT_DIR.set(dir);
 }
@@ -124,10 +196,7 @@ pub fn create_vault(master_password: &str) -> Result<(), String> {
     let json = Zeroizing::new(serde_json::to_vec(&data).map_err(|e| e.to_string())?);
     let ciphertext = crypto::encrypt(&json, &key)?;
 
-    let file = VaultFile {
-        salt: base64::engine::general_purpose::STANDARD.encode(salt),
-        ciphertext,
-    };
+    let file = VaultFile::new(&salt, ciphertext);
 
     let path = vault_path()?;
     fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
@@ -143,11 +212,16 @@ pub fn unlock_vault(master_password: &str) -> Result<(Zeroizing<[u8; 32]>, Vault
 
     let file: VaultFile = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
 
-    let salt_bytes = base64::engine::general_purpose::STANDARD
-        .decode(&file.salt)
-        .map_err(|e| e.to_string())?;
+    if file.version > CURRENT_VERSION {
+        return Err(format!(
+            "This vault was written by a newer version of Vault (format {}). Update Vault to open it.",
+            file.version
+        ));
+    }
 
-    let key = crypto::derive_key(master_password, &salt_bytes)?;
+    // Always derive with the parameters the file was written with, not the
+    // current defaults, or raising the cost would lock users out.
+    let key = crypto::derive_key_with(master_password, &file.salt_bytes()?, file.kdf)?;
 
     let plaintext = crypto::decrypt(&file.ciphertext, &key)?;
 
@@ -170,23 +244,19 @@ pub fn change_master_password(
         .map_err(|_| "Vault file not found".to_string())?;
     let file: VaultFile = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
 
-    let salt_bytes = base64::engine::general_purpose::STANDARD
-        .decode(&file.salt)
-        .map_err(|e| e.to_string())?;
-    let current_key = crypto::derive_key(current_password, &salt_bytes)?;
+    let current_key = crypto::derive_key_with(current_password, &file.salt_bytes()?, file.kdf)?;
     crypto::decrypt(&file.ciphertext, &current_key)
         .map_err(|_| "Current password is incorrect".to_string())?;
 
+    // A new password means a new key, so this is the one moment the vault can
+    // move to the current format and cost without knowing the old password twice.
     let new_salt = crypto::generate_salt();
     let new_key = crypto::derive_key(new_password, &new_salt)?;
 
     let json = Zeroizing::new(serde_json::to_vec(data).map_err(|e| e.to_string())?);
     let ciphertext = crypto::encrypt(&json, &new_key)?;
 
-    let updated = VaultFile {
-        salt: base64::engine::general_purpose::STANDARD.encode(new_salt),
-        ciphertext,
-    };
+    let updated = VaultFile::new(&new_salt, ciphertext);
 
     let out = serde_json::to_string(&updated).map_err(|e| e.to_string())?;
     write_vault_file(&path, &out)?;
@@ -203,7 +273,12 @@ pub fn save_vault(key: &[u8; 32], data: &VaultData) -> Result<(), String> {
     let json = Zeroizing::new(serde_json::to_vec(data).map_err(|e| e.to_string())?);
     let ciphertext = crypto::encrypt(&json, key)?;
 
+    // Salt and cost stay exactly as they were: the session key in hand was
+    // derived from them, and re-deriving needs the master password. Changing
+    // the master password is what moves a vault to the current parameters.
     let updated = VaultFile {
+        version: file.version.max(CURRENT_VERSION),
+        kdf: file.kdf,
         salt: file.salt,
         ciphertext,
     };
@@ -236,6 +311,7 @@ pub fn add_entry(
     let entry = Entry {
         id: Uuid::new_v4().to_string(),
         name,
+        kind: EntryKind::Login,
         username,
         email,
         password,
@@ -245,6 +321,8 @@ pub fn add_entry(
         totp_secret,
         created_at: now,
         updated_at: now,
+        password_changed_at: Some(now),
+        password_history: Vec::new(),
         last_used_at: None,
         use_count: 0,
     };
@@ -273,15 +351,29 @@ pub fn update_entry(
         .find(|e| e.id == id)
         .ok_or("Entry not found")?;
 
+    let now = now_secs();
+
+    // Only a real password change touches the history and the rotation date,
+    // so editing notes or a URL doesn't make the entry look freshly rotated.
+    if entry.password != password {
+        entry.password_history.push(PastPassword {
+            password: std::mem::replace(&mut entry.password, password),
+            replaced_at: now,
+        });
+        if entry.password_history.len() > MAX_PASSWORD_HISTORY {
+            entry.password_history.remove(0);
+        }
+        entry.password_changed_at = Some(now);
+    }
+
     entry.name = name;
     entry.username = username;
     entry.email = email;
-    entry.password = password;
     entry.url = url;
     entry.notes = notes;
     entry.folder_id = folder_id;
     entry.totp_secret = totp_secret;
-    entry.updated_at = now_secs();
+    entry.updated_at = now;
 
     save_vault(key, data)
 }
@@ -365,6 +457,7 @@ pub fn import_csv_logins(
         data.entries.push(Entry {
             id: Uuid::new_v4().to_string(),
             name: std::mem::take(&mut login.name),
+            kind: EntryKind::Login,
             username: std::mem::take(&mut login.username),
             email: std::mem::take(&mut login.email),
             password: std::mem::take(&mut login.password),
@@ -374,6 +467,8 @@ pub fn import_csv_logins(
             totp_secret: std::mem::take(&mut login.totp_secret),
             created_at: now,
             updated_at: now,
+            password_changed_at: Some(now),
+            password_history: Vec::new(),
             last_used_at: None,
             use_count: 0,
         });
@@ -431,105 +526,81 @@ pub fn import_vault(src_path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
 
-    /// Points the vault at a temp directory for the duration of a test.
-    /// Each test gets its own subdirectory to avoid interference.
-    fn setup_temp_vault(test_name: &str) -> PathBuf {
-        let dir = env::temp_dir().join("vault_tests").join(test_name);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    /// `VAULT_DIR` is a process-wide `OnceLock`, so every test in this binary
+    /// shares one directory and they must not run concurrently. Each test
+    /// takes this guard, which points the vault at a temp directory the first
+    /// time and clears any file left by the previous test.
+    ///
+    /// This matters: without it the real `create_vault`/`save_vault` paths
+    /// would write to the developer's actual vault under `<config>/vault/`.
+    fn vault_test<'a>() -> MutexGuard<'a, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        static DIR: OnceLock<PathBuf> = OnceLock::new();
+
+        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = DIR.get_or_init(|| {
+            let dir = std::env::temp_dir().join("vault_tests");
+            fs::create_dir_all(&dir).unwrap();
+            set_vault_dir(dir.clone());
+            dir
+        });
+        assert_eq!(vault_path().unwrap(), dir.join("vault.enc"));
+        let _ = fs::remove_file(dir.join("vault.enc"));
+        guard
     }
 
-    /// Overrides vault_path() by writing the vault file to a known temp path.
-    /// We do this by calling the internal helpers directly rather than
-    /// the public API, so we can control the path.
-    fn temp_vault_path(dir: &PathBuf) -> PathBuf {
-        dir.join("vault.enc")
+    fn temp_file(name: &str) -> PathBuf {
+        std::env::temp_dir().join("vault_tests").join(name)
     }
 
-    fn create_vault_at(dir: &PathBuf, password: &str) {
-        let salt = crypto::generate_salt();
-        let key = crypto::derive_key(password, &salt).unwrap();
-        let data = VaultData::default();
-        let json = serde_json::to_vec(&data).unwrap();
-        let ciphertext = crypto::encrypt(&json, &key).unwrap();
-        let file = VaultFile {
-            salt: base64::engine::general_purpose::STANDARD.encode(salt),
-            ciphertext,
-        };
-        let out = serde_json::to_string(&file).unwrap();
-        fs::write(temp_vault_path(dir), out).unwrap();
-    }
-
-    fn unlock_vault_at(dir: &PathBuf, password: &str) -> (Zeroizing<[u8; 32]>, VaultData) {
-        let raw = fs::read_to_string(temp_vault_path(dir)).unwrap();
-        let file: VaultFile = serde_json::from_str(&raw).unwrap();
-        let salt_bytes = base64::engine::general_purpose::STANDARD
-            .decode(&file.salt)
-            .unwrap();
-        let key = crypto::derive_key(password, &salt_bytes).unwrap();
-        let plaintext = crypto::decrypt(&file.ciphertext, &key).unwrap();
-        let data: VaultData = serde_json::from_slice(&plaintext).unwrap();
-        (key, data)
-    }
-
-    fn save_vault_at(dir: &PathBuf, key: &[u8; 32], data: &VaultData) {
-        let raw = fs::read_to_string(temp_vault_path(dir)).unwrap();
-        let file: VaultFile = serde_json::from_str(&raw).unwrap();
-        let json = serde_json::to_vec(data).unwrap();
-        let ciphertext = crypto::encrypt(&json, key).unwrap();
-        let updated = VaultFile { salt: file.salt, ciphertext };
-        fs::write(temp_vault_path(dir), serde_json::to_string(&updated).unwrap()).unwrap();
+    fn sample_entry(key: &[u8; 32], data: &mut VaultData, name: &str, password: &str) -> Entry {
+        add_entry(
+            key,
+            data,
+            name.into(),
+            None,
+            "user@example.com".into(),
+            password.into(),
+            Some("example.com".into()),
+            None,
+            None,
+            None,
+        )
+        .unwrap()
     }
 
     #[test]
     fn create_and_unlock_vault() {
-        let dir = setup_temp_vault("create_and_unlock");
-        create_vault_at(&dir, "my-master-password");
-        let (_key, data) = unlock_vault_at(&dir, "my-master-password");
+        let _g = vault_test();
+        create_vault("my-master-password").unwrap();
+        let (_key, data) = unlock_vault("my-master-password").unwrap();
         assert!(data.entries.is_empty());
     }
 
     #[test]
+    fn create_refuses_to_overwrite_an_existing_vault() {
+        let _g = vault_test();
+        create_vault("password").unwrap();
+        assert!(create_vault("another-password").is_err());
+    }
+
+    #[test]
     fn unlock_fails_with_wrong_password() {
-        let dir = setup_temp_vault("wrong_password");
-        create_vault_at(&dir, "correct-password");
-        let raw = fs::read_to_string(temp_vault_path(&dir)).unwrap();
-        let file: VaultFile = serde_json::from_str(&raw).unwrap();
-        let salt_bytes = base64::engine::general_purpose::STANDARD
-            .decode(&file.salt)
-            .unwrap();
-        let key = crypto::derive_key("wrong-password", &salt_bytes).unwrap();
-        let result = crypto::decrypt(&file.ciphertext, &key);
-        assert!(result.is_err());
+        let _g = vault_test();
+        create_vault("correct-password").unwrap();
+        assert!(unlock_vault("wrong-password").is_err());
     }
 
     #[test]
     fn add_entry_persists() {
-        let dir = setup_temp_vault("add_entry");
-        create_vault_at(&dir, "password");
-        let (key, mut data) = unlock_vault_at(&dir, "password");
+        let _g = vault_test();
+        create_vault("password").unwrap();
+        let (key, mut data) = unlock_vault("password").unwrap();
+        sample_entry(&key, &mut data, "GitHub", "hunter2");
 
-        let entry = Entry {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: "GitHub".into(),
-            username: None,
-            email: "user@example.com".into(),
-            password: "hunter2".into(),
-            url: Some("github.com".into()),
-            notes: None,
-            folder_id: None,
-            totp_secret: None,
-            created_at: now_secs(),
-            updated_at: now_secs(),
-            last_used_at: None,
-            use_count: 0,
-        };
-        data.entries.push(entry.clone());
-        save_vault_at(&dir, &key, &data);
-
-        let (_key2, data2) = unlock_vault_at(&dir, "password");
+        let (_key2, data2) = unlock_vault("password").unwrap();
         assert_eq!(data2.entries.len(), 1);
         assert_eq!(data2.entries[0].name, "GitHub");
         assert_eq!(data2.entries[0].email, "user@example.com");
@@ -537,347 +608,274 @@ mod tests {
 
     #[test]
     fn delete_entry_persists() {
-        let dir = setup_temp_vault("delete_entry");
-        create_vault_at(&dir, "password");
-        let (key, mut data) = unlock_vault_at(&dir, "password");
+        let _g = vault_test();
+        create_vault("password").unwrap();
+        let (key, mut data) = unlock_vault("password").unwrap();
+        let entry = sample_entry(&key, &mut data, "To Delete", "pass");
 
-        let id = uuid::Uuid::new_v4().to_string();
-        data.entries.push(Entry {
-            id: id.clone(),
-            name: "To Delete".into(),
-            username: None,
-            email: "a@b.com".into(),
-            password: "pass".into(),
-            url: None,
-            notes: None,
-            folder_id: None,
-            totp_secret: None,
-            created_at: now_secs(),
-            updated_at: now_secs(),
-            last_used_at: None,
-            use_count: 0,
-        });
-        save_vault_at(&dir, &key, &data);
+        delete_entry(&key, &mut data, &entry.id).unwrap();
+        assert!(delete_entry(&key, &mut data, &entry.id).is_err());
 
-        data.entries.retain(|e| e.id != id);
-        save_vault_at(&dir, &key, &data);
-
-        let (_key2, data2) = unlock_vault_at(&dir, "password");
+        let (_key2, data2) = unlock_vault("password").unwrap();
         assert!(data2.entries.is_empty());
     }
 
     #[test]
     fn update_entry_persists() {
-        let dir = setup_temp_vault("update_entry");
-        create_vault_at(&dir, "password");
-        let (key, mut data) = unlock_vault_at(&dir, "password");
+        let _g = vault_test();
+        create_vault("password").unwrap();
+        let (key, mut data) = unlock_vault("password").unwrap();
+        let entry = sample_entry(&key, &mut data, "Old Name", "oldpass");
 
-        let id = uuid::Uuid::new_v4().to_string();
-        data.entries.push(Entry {
-            id: id.clone(),
-            name: "Old Name".into(),
-            username: None,
-            email: "old@example.com".into(),
-            password: "oldpass".into(),
-            url: None,
-            notes: None,
-            folder_id: None,
-            totp_secret: None,
-            created_at: now_secs(),
-            updated_at: now_secs(),
-            last_used_at: None,
-            use_count: 0,
-        });
-        save_vault_at(&dir, &key, &data);
+        update_entry(
+            &key, &mut data, &entry.id,
+            "New Name".into(), None, "new@example.com".into(), "newpass".into(),
+            None, None, None, None,
+        ).unwrap();
 
-        if let Some(e) = data.entries.iter_mut().find(|e| e.id == id) {
-            e.name = "New Name".into();
-            e.email = "new@example.com".into();
-            e.password = "newpass".into();
-        }
-        save_vault_at(&dir, &key, &data);
-
-        let (_key2, data2) = unlock_vault_at(&dir, "password");
+        let (_key2, data2) = unlock_vault("password").unwrap();
         assert_eq!(data2.entries[0].name, "New Name");
         assert_eq!(data2.entries[0].email, "new@example.com");
+        assert_eq!(data2.entries[0].password, "newpass");
     }
 
     #[test]
-    fn totp_secret_persists_roundtrip() {
-        let dir = setup_temp_vault("totp_secret_roundtrip");
-        create_vault_at(&dir, "password");
-        let (key, mut data) = unlock_vault_at(&dir, "password");
+    fn changing_the_password_records_history() {
+        let _g = vault_test();
+        create_vault("password").unwrap();
+        let (key, mut data) = unlock_vault("password").unwrap();
+        let entry = sample_entry(&key, &mut data, "Rotating", "first");
 
-        let id = uuid::Uuid::new_v4().to_string();
-        data.entries.push(Entry {
-            id: id.clone(),
-            name: "GitHub 2FA".into(),
-            username: None,
-            email: "user@example.com".into(),
-            password: "pass".into(),
-            url: None,
-            notes: None,
-            folder_id: None,
-            totp_secret: Some("JBSWY3DPEHPK3PXP".into()),
-            created_at: now_secs(),
-            updated_at: now_secs(),
-            last_used_at: None,
-            use_count: 0,
-        });
-        save_vault_at(&dir, &key, &data);
-
-        let (_key2, data2) = unlock_vault_at(&dir, "password");
-        assert_eq!(data2.entries.len(), 1);
-        assert_eq!(data2.entries[0].totp_secret, Some("JBSWY3DPEHPK3PXP".into()));
-    }
-
-    #[test]
-    fn totp_secret_update_persists() {
-        let dir = setup_temp_vault("totp_secret_update");
-        create_vault_at(&dir, "password");
-        let (key, mut data) = unlock_vault_at(&dir, "password");
-
-        let id = uuid::Uuid::new_v4().to_string();
-        data.entries.push(Entry {
-            id: id.clone(),
-            name: "Service".into(),
-            username: None,
-            email: "user@example.com".into(),
-            password: "pass".into(),
-            url: None,
-            notes: None,
-            folder_id: None,
-            totp_secret: None,
-            created_at: now_secs(),
-            updated_at: now_secs(),
-            last_used_at: None,
-            use_count: 0,
-        });
-        save_vault_at(&dir, &key, &data);
-
-        // Now update the entry to add a TOTP secret
-        if let Some(e) = data.entries.iter_mut().find(|e| e.id == id) {
-            e.totp_secret = Some("JBSWY3DPEHPK3PXP".into());
+        for pw in ["second", "third"] {
+            update_entry(
+                &key, &mut data, &entry.id,
+                "Rotating".into(), None, "user@example.com".into(), pw.into(),
+                None, None, None, None,
+            ).unwrap();
         }
-        save_vault_at(&dir, &key, &data);
 
-        let (_key2, data2) = unlock_vault_at(&dir, "password");
-        assert_eq!(data2.entries[0].totp_secret, Some("JBSWY3DPEHPK3PXP".into()));
+        let (_key2, data2) = unlock_vault("password").unwrap();
+        let stored = &data2.entries[0];
+        assert_eq!(stored.password, "third");
+        let history: Vec<&str> = stored
+            .password_history
+            .iter()
+            .map(|p| p.password.as_str())
+            .collect();
+        assert_eq!(history, vec!["first", "second"]);
     }
 
     #[test]
-    fn usage_stats_persist_roundtrip() {
-        let dir = setup_temp_vault("usage_stats_roundtrip");
-        create_vault_at(&dir, "password");
-        let (key, mut data) = unlock_vault_at(&dir, "password");
+    fn editing_other_fields_leaves_the_password_untouched() {
+        let _g = vault_test();
+        create_vault("password").unwrap();
+        let (key, mut data) = unlock_vault("password").unwrap();
+        let entry = sample_entry(&key, &mut data, "Stable", "same-password");
+        let changed_at = data.entries[0].password_changed_at;
 
-        data.entries.push(Entry {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: "Daily Login".into(),
-            username: None,
-            email: "user@example.com".into(),
-            password: "pass".into(),
-            url: None,
-            notes: None,
-            folder_id: None,
-            totp_secret: None,
-            created_at: now_secs(),
-            updated_at: now_secs(),
-            last_used_at: None,
-            use_count: 0,
-        });
-        save_vault_at(&dir, &key, &data);
+        update_entry(
+            &key, &mut data, &entry.id,
+            "Renamed".into(), None, "user@example.com".into(), "same-password".into(),
+            None, Some("a note".into()), None, None,
+        ).unwrap();
 
-        // Simulate mark_entry_used's mutation
-        let used_at = now_secs();
-        data.entries[0].last_used_at = Some(used_at);
-        data.entries[0].use_count += 1;
-        save_vault_at(&dir, &key, &data);
-
-        let (_key2, data2) = unlock_vault_at(&dir, "password");
-        assert_eq!(data2.entries[0].last_used_at, Some(used_at));
-        assert_eq!(data2.entries[0].use_count, 1);
+        let (_key2, data2) = unlock_vault("password").unwrap();
+        assert!(data2.entries[0].password_history.is_empty());
+        assert_eq!(data2.entries[0].password_changed_at, changed_at);
     }
 
     #[test]
-    fn mark_entry_used_not_found_returns_error() {
-        let mut data = VaultData::default();
-        let dummy_key = [0u8; 32];
-        let result = mark_entry_used(&dummy_key, &mut data, "nonexistent-id");
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Entry not found");
+    fn password_history_is_capped() {
+        let _g = vault_test();
+        create_vault("password").unwrap();
+        let (key, mut data) = unlock_vault("password").unwrap();
+        let entry = sample_entry(&key, &mut data, "Busy", "pw-0");
+
+        for n in 1..=(MAX_PASSWORD_HISTORY + 3) {
+            update_entry(
+                &key, &mut data, &entry.id,
+                "Busy".into(), None, "user@example.com".into(), format!("pw-{n}"),
+                None, None, None, None,
+            ).unwrap();
+        }
+
+        let stored = &data.entries[0];
+        assert_eq!(stored.password_history.len(), MAX_PASSWORD_HISTORY);
+        // Oldest are dropped first, so the window ends just before the current one
+        assert_eq!(stored.password, format!("pw-{}", MAX_PASSWORD_HISTORY + 3));
+        assert_eq!(stored.password_history[0].password, "pw-3");
     }
 
     #[test]
-    fn entry_without_usage_fields_deserializes() {
-        // Vaults written before last_used_at/use_count existed must still load
-        let json = br#"{
-            "id": "old-id", "name": "Legacy", "email": "a@b.com",
-            "password": "pass", "url": null, "notes": null,
-            "created_at": 100, "updated_at": 100
-        }"#;
-        let entry: Entry = serde_json::from_slice(json).unwrap();
-        assert_eq!(entry.last_used_at, None);
-        assert_eq!(entry.use_count, 0);
-    }
+    fn folders_round_trip_and_deleting_one_unassigns_its_entries() {
+        let _g = vault_test();
+        create_vault("password").unwrap();
+        let (key, mut data) = unlock_vault("password").unwrap();
 
-    /// Mirrors change_master_password() at a temp path: verify the current
-    /// password, then rewrite the file with a fresh salt and new key.
-    fn change_password_at(dir: &PathBuf, current: &str, new: &str, data: &VaultData) {
-        let raw = fs::read_to_string(temp_vault_path(dir)).unwrap();
-        let file: VaultFile = serde_json::from_str(&raw).unwrap();
-        let salt_bytes = base64::engine::general_purpose::STANDARD
-            .decode(&file.salt)
-            .unwrap();
-        let current_key = crypto::derive_key(current, &salt_bytes).unwrap();
-        crypto::decrypt(&file.ciphertext, &current_key).unwrap();
+        let folder = add_folder(&key, &mut data, "Work".into()).unwrap();
+        rename_folder(&key, &mut data, &folder.id, "Personal".into()).unwrap();
+        let entry = add_entry(
+            &key, &mut data, "Filed".into(), None, "a@b.com".into(), "pw".into(),
+            None, None, Some(folder.id.clone()), None,
+        ).unwrap();
+        assert_eq!(entry.folder_id.as_deref(), Some(folder.id.as_str()));
 
-        let new_salt = crypto::generate_salt();
-        let new_key = crypto::derive_key(new, &new_salt).unwrap();
-        let json = serde_json::to_vec(data).unwrap();
-        let ciphertext = crypto::encrypt(&json, &new_key).unwrap();
-        let updated = VaultFile {
-            salt: base64::engine::general_purpose::STANDARD.encode(new_salt),
-            ciphertext,
-        };
-        fs::write(temp_vault_path(dir), serde_json::to_string(&updated).unwrap()).unwrap();
+        delete_folder(&key, &mut data, &folder.id).unwrap();
+
+        let (_key2, data2) = unlock_vault("password").unwrap();
+        assert!(data2.folders.is_empty());
+        assert_eq!(data2.entries[0].folder_id, None);
     }
 
     #[test]
-    fn change_password_reencrypts_and_old_password_fails() {
-        let dir = setup_temp_vault("change_password");
-        create_vault_at(&dir, "old-password");
-        let (key, mut data) = unlock_vault_at(&dir, "old-password");
+    fn changing_the_master_password_rekeys_the_vault() {
+        let _g = vault_test();
+        create_vault("old-password").unwrap();
+        let (key, mut data) = unlock_vault("old-password").unwrap();
+        sample_entry(&key, &mut data, "Kept", "pw");
 
-        data.entries.push(Entry {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: "Kept".into(),
-            username: None,
-            email: "a@b.com".into(),
-            password: "secret".into(),
-            url: None,
-            notes: None,
-            folder_id: None,
-            totp_secret: None,
-            created_at: now_secs(),
-            updated_at: now_secs(),
-            last_used_at: None,
-            use_count: 0,
-        });
-        save_vault_at(&dir, &key, &data);
+        assert!(change_master_password("wrong", "new-password", &data).is_err());
+        change_master_password("old-password", "new-password", &data).unwrap();
 
-        change_password_at(&dir, "old-password", "new-password", &data);
-
-        // New password unlocks and the data survived the re-encryption
-        let (_key2, data2) = unlock_vault_at(&dir, "new-password");
-        assert_eq!(data2.entries.len(), 1);
+        assert!(unlock_vault("old-password").is_err());
+        let (_key2, data2) = unlock_vault("new-password").unwrap();
         assert_eq!(data2.entries[0].name, "Kept");
-
-        // Old password no longer decrypts the vault
-        let raw = fs::read_to_string(temp_vault_path(&dir)).unwrap();
-        let file: VaultFile = serde_json::from_str(&raw).unwrap();
-        let salt_bytes = base64::engine::general_purpose::STANDARD
-            .decode(&file.salt)
-            .unwrap();
-        let old_key = crypto::derive_key("old-password", &salt_bytes).unwrap();
-        assert!(crypto::decrypt(&file.ciphertext, &old_key).is_err());
     }
 
     #[test]
-    fn export_fails_when_no_vault_exists() {
-        // vault_path() won't exist in a fresh temp env — export should report it
-        let dest = env::temp_dir().join("vault_tests").join("export_no_vault_dest.enc");
-        // Only meaningful if the system vault path doesn't exist (CI / clean machine).
-        // If it does exist locally, skip gracefully.
-        let src = dirs::config_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("vault")
-            .join("vault.enc");
-        if !src.exists() {
-            let result = export_vault(&dest);
-            assert!(result.is_err());
-            assert_eq!(result.unwrap_err(), "No vault to export");
-        }
+    fn export_then_import_restores_the_vault() {
+        let _g = vault_test();
+        create_vault("password").unwrap();
+        let (key, mut data) = unlock_vault("password").unwrap();
+        sample_entry(&key, &mut data, "Backed Up", "pw");
+
+        let backup = temp_file("backup.enc");
+        export_vault(&backup).unwrap();
+
+        // Replace it with an unrelated vault, then restore from the backup
+        fs::remove_file(vault_path().unwrap()).unwrap();
+        create_vault("different-password").unwrap();
+        import_vault(&backup).unwrap();
+
+        let (_key2, data2) = unlock_vault("password").unwrap();
+        assert_eq!(data2.entries[0].name, "Backed Up");
+        assert!(vault_path().unwrap().with_extension("enc.bak").exists());
+        let _ = fs::remove_file(&backup);
     }
 
     #[test]
-    fn import_rejects_invalid_json() {
-        let dir = setup_temp_vault("import_invalid_json");
-        let bad_file = dir.join("bad.enc");
-        fs::write(&bad_file, b"this is not json").unwrap();
-        let result = import_vault(&bad_file);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Selected file is not a valid vault backup");
+    fn import_rejects_a_file_that_is_not_a_vault() {
+        let _g = vault_test();
+        create_vault("password").unwrap();
+        let junk = temp_file("junk.enc");
+        fs::write(&junk, "not a vault").unwrap();
+        assert!(import_vault(&junk).is_err());
+        // The existing vault must survive a rejected import
+        assert!(unlock_vault("password").is_ok());
+        let _ = fs::remove_file(&junk);
     }
 
     #[test]
-    fn import_rejects_json_missing_required_fields() {
-        let dir = setup_temp_vault("import_missing_fields");
-        let bad_file = dir.join("bad.enc");
-        fs::write(&bad_file, br#"{"foo": "bar"}"#).unwrap();
-        let result = import_vault(&bad_file);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Selected file is not a valid vault backup");
+    fn a_vault_without_a_header_still_unlocks() {
+        let _g = vault_test();
+        create_vault("password").unwrap();
+
+        // Rewrite it in the original headerless shape, as an existing
+        // installation's file is on disk today
+        let path = vault_path().unwrap();
+        let file: VaultFile = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let legacy = serde_json::json!({ "salt": file.salt, "ciphertext": file.ciphertext });
+        fs::write(&path, legacy.to_string()).unwrap();
+
+        let (key, data) = unlock_vault("password").unwrap();
+        assert!(data.entries.is_empty());
+
+        // The next save stamps the current version onto it
+        save_vault(&key, &data).unwrap();
+        let upgraded: VaultFile = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(upgraded.version, CURRENT_VERSION);
+        assert_eq!(upgraded.kdf, crypto::DEFAULT_KDF);
     }
 
     #[test]
-    fn delete_entry_not_found_returns_error() {
-        let mut data = VaultData {
-            entries: vec![Entry {
-                id: "real-id".into(),
-                name: "Test".into(),
-                username: None,
-                email: "a@b.com".into(),
-                password: "pass".into(),
-                url: None,
-                notes: None,
-                folder_id: None,
-                totp_secret: None,
-                created_at: now_secs(),
-                updated_at: now_secs(),
-                last_used_at: None,
-                use_count: 0,
-            }],
-            folders: vec![],
+    fn a_vault_from_a_newer_format_is_refused() {
+        let _g = vault_test();
+        create_vault("password").unwrap();
+        let path = vault_path().unwrap();
+        let mut file: VaultFile =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        file.version = CURRENT_VERSION + 1;
+        fs::write(&path, serde_json::to_string(&file).unwrap()).unwrap();
+
+        let err = unlock_vault("password").unwrap_err();
+        assert!(err.contains("newer version"), "unexpected error: {err}");
+    }
+
+    /// Writes a vault at a deliberately cheap, non-default cost.
+    fn write_vault_at_cost(password: &str, kdf: crypto::KdfParams) {
+        let path = vault_path().unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let salt = crypto::generate_salt();
+        let key = crypto::derive_key_with(password, &salt, kdf).unwrap();
+        let json = serde_json::to_vec(&VaultData::default()).unwrap();
+        let file = VaultFile {
+            version: CURRENT_VERSION,
+            kdf,
+            salt: base64::engine::general_purpose::STANDARD.encode(salt),
+            ciphertext: crypto::encrypt(&json, &key).unwrap(),
         };
-        // delete_entry returns Err before touching the filesystem when id not found
-        let dummy_key = [0u8; 32];
-        let result = delete_entry(&dummy_key, &mut data, "nonexistent-id");
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Entry not found");
-        // original entry untouched
-        assert_eq!(data.entries.len(), 1);
+        fs::write(&path, serde_json::to_string(&file).unwrap()).unwrap();
     }
 
     #[test]
-    fn multiple_entries_survive_roundtrip() {
-        let dir = setup_temp_vault("multiple_entries");
-        create_vault_at(&dir, "password");
-        let (key, mut data) = unlock_vault_at(&dir, "password");
+    fn unlock_uses_the_cost_stored_in_the_file() {
+        let _g = vault_test();
+        write_vault_at_cost("password", crypto::KdfParams { m_cost: 8192, t_cost: 1, p_cost: 1 });
+        // Deriving at the default cost would produce the wrong key
+        unlock_vault("password").unwrap();
+    }
 
-        for i in 0..5 {
-            data.entries.push(Entry {
-                id: uuid::Uuid::new_v4().to_string(),
-                name: format!("Service {i}"),
-                username: None,
-                email: format!("user{i}@example.com"),
-                password: format!("pass{i}"),
-                url: None,
-                notes: None,
-                folder_id: None,
-                totp_secret: None,
-                created_at: now_secs(),
-                updated_at: now_secs(),
-                last_used_at: None,
-                use_count: 0,
-            });
-        }
-        save_vault_at(&dir, &key, &data);
+    #[test]
+    fn changing_the_master_password_moves_the_vault_to_current_parameters() {
+        let _g = vault_test();
+        write_vault_at_cost("old", crypto::KdfParams { m_cost: 8192, t_cost: 1, p_cost: 1 });
 
-        let (_key2, data2) = unlock_vault_at(&dir, "password");
-        assert_eq!(data2.entries.len(), 5);
-        for i in 0..5 {
-            assert_eq!(data2.entries[i].name, format!("Service {i}"));
-        }
+        change_master_password("old", "new", &VaultData::default()).unwrap();
+
+        let path = vault_path().unwrap();
+        let rekeyed: VaultFile =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(rekeyed.kdf, crypto::DEFAULT_KDF);
+        unlock_vault("new").unwrap();
+    }
+
+    #[test]
+    fn an_entry_without_an_email_round_trips() {
+        let _g = vault_test();
+        create_vault("password").unwrap();
+        let (key, mut data) = unlock_vault("password").unwrap();
+        add_entry(
+            &key, &mut data, "Router".into(), Some("admin".into()), String::new(),
+            "pw".into(), None, None, None, None,
+        ).unwrap();
+
+        let (_key2, data2) = unlock_vault("password").unwrap();
+        assert_eq!(data2.entries[0].username.as_deref(), Some("admin"));
+        assert!(data2.entries[0].email.is_empty());
+    }
+
+    #[test]
+    fn mark_entry_used_counts_copies() {
+        let _g = vault_test();
+        create_vault("password").unwrap();
+        let (key, mut data) = unlock_vault("password").unwrap();
+        let entry = sample_entry(&key, &mut data, "Popular", "pw");
+
+        mark_entry_used(&key, &mut data, &entry.id).unwrap();
+        mark_entry_used(&key, &mut data, &entry.id).unwrap();
+
+        let (_key2, data2) = unlock_vault("password").unwrap();
+        assert_eq!(data2.entries[0].use_count, 2);
+        assert!(data2.entries[0].last_used_at.is_some());
     }
 }
