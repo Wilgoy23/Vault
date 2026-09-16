@@ -154,8 +154,14 @@ fn vault_exists() -> bool {
     vault::vault_exists()
 }
 
+// Anything below that derives a key (Argon2id at 64 MiB) or writes the vault
+// file is an `async fn`: Tauri runs sync commands on the main thread, where a
+// few hundred milliseconds of hashing or an fsync freezes both windows and the
+// tray. There is nothing to await inside them; `async` alone moves them to the
+// thread pool.
+
 #[tauri::command]
-fn create_vault(mut password: String, state: State<VaultState>) -> Result<(), String> {
+async fn create_vault(mut password: String, state: State<'_, VaultState>) -> Result<(), String> {
     // Immediately unlock after creation; wipe the password either way
     let result = vault::create_vault(&password).and_then(|_| vault::unlock_vault(&password));
     password.zeroize();
@@ -167,7 +173,7 @@ fn create_vault(mut password: String, state: State<VaultState>) -> Result<(), St
 }
 
 #[tauri::command]
-fn unlock(mut password: String, state: State<VaultState>) -> Result<(), String> {
+async fn unlock(mut password: String, state: State<'_, VaultState>) -> Result<(), String> {
     let result = vault::unlock_vault(&password);
     password.zeroize();
     let (key, data) = result?;
@@ -178,10 +184,10 @@ fn unlock(mut password: String, state: State<VaultState>) -> Result<(), String> 
 }
 
 #[tauri::command]
-fn change_master_password(
+async fn change_master_password(
     mut current_password: String,
     mut new_password: String,
-    state: State<VaultState>,
+    state: State<'_, VaultState>,
 ) -> Result<(), String> {
     let mut guard = state.lock().unwrap();
     let s = &mut *guard;
@@ -214,12 +220,12 @@ fn lock(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn is_unlocked(state: State<VaultState>) -> bool {
+fn is_unlocked(state: State<'_, VaultState>) -> bool {
     state.lock().unwrap().key.is_some()
 }
 
 #[tauri::command]
-fn list_entries(state: State<VaultState>) -> Result<Vec<Entry>, String> {
+fn list_entries(state: State<'_, VaultState>) -> Result<Vec<Entry>, String> {
     let s = state.lock().unwrap();
     s.data
         .as_ref()
@@ -228,7 +234,7 @@ fn list_entries(state: State<VaultState>) -> Result<Vec<Entry>, String> {
 }
 
 #[tauri::command]
-fn add_entry(
+async fn add_entry(
     name: String,
     username: Option<String>,
     email: String,
@@ -237,7 +243,7 @@ fn add_entry(
     notes: Option<String>,
     folder_id: Option<String>,
     totp_secret: Option<String>,
-    state: State<VaultState>,
+    state: State<'_, VaultState>,
 ) -> Result<Entry, String> {
     let mut guard = state.lock().unwrap();
     let s = &mut *guard;
@@ -247,7 +253,7 @@ fn add_entry(
 }
 
 #[tauri::command]
-fn update_entry(
+async fn update_entry(
     id: String,
     name: String,
     username: Option<String>,
@@ -257,7 +263,7 @@ fn update_entry(
     notes: Option<String>,
     folder_id: Option<String>,
     totp_secret: Option<String>,
-    state: State<VaultState>,
+    state: State<'_, VaultState>,
 ) -> Result<(), String> {
     let mut guard = state.lock().unwrap();
     let s = &mut *guard;
@@ -267,7 +273,7 @@ fn update_entry(
 }
 
 #[tauri::command]
-fn list_folders(state: State<VaultState>) -> Result<Vec<Folder>, String> {
+fn list_folders(state: State<'_, VaultState>) -> Result<Vec<Folder>, String> {
     let s = state.lock().unwrap();
     s.data
         .as_ref()
@@ -276,7 +282,7 @@ fn list_folders(state: State<VaultState>) -> Result<Vec<Folder>, String> {
 }
 
 #[tauri::command]
-fn add_folder(name: String, state: State<VaultState>) -> Result<Folder, String> {
+async fn add_folder(name: String, state: State<'_, VaultState>) -> Result<Folder, String> {
     let mut guard = state.lock().unwrap();
     let s = &mut *guard;
     let key = s.key.as_deref().ok_or("Vault is locked")?;
@@ -285,7 +291,7 @@ fn add_folder(name: String, state: State<VaultState>) -> Result<Folder, String> 
 }
 
 #[tauri::command]
-fn rename_folder(id: String, name: String, state: State<VaultState>) -> Result<(), String> {
+async fn rename_folder(id: String, name: String, state: State<'_, VaultState>) -> Result<(), String> {
     let mut guard = state.lock().unwrap();
     let s = &mut *guard;
     let key = s.key.as_deref().ok_or("Vault is locked")?;
@@ -294,7 +300,7 @@ fn rename_folder(id: String, name: String, state: State<VaultState>) -> Result<(
 }
 
 #[tauri::command]
-fn delete_folder(id: String, state: State<VaultState>) -> Result<(), String> {
+async fn delete_folder(id: String, state: State<'_, VaultState>) -> Result<(), String> {
     let mut guard = state.lock().unwrap();
     let s = &mut *guard;
     let key = s.key.as_deref().ok_or("Vault is locked")?;
@@ -303,7 +309,7 @@ fn delete_folder(id: String, state: State<VaultState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn mark_entry_used(id: String, state: State<VaultState>) -> Result<(), String> {
+async fn mark_entry_used(id: String, state: State<'_, VaultState>) -> Result<(), String> {
     let mut guard = state.lock().unwrap();
     let s = &mut *guard;
     let key = s.key.as_deref().ok_or("Vault is locked")?;
@@ -312,7 +318,7 @@ fn mark_entry_used(id: String, state: State<VaultState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn delete_entry(id: String, state: State<VaultState>) -> Result<(), String> {
+async fn delete_entry(id: String, state: State<'_, VaultState>) -> Result<(), String> {
     let mut guard = state.lock().unwrap();
     let s = &mut *guard;
     let key = s.key.as_deref().ok_or("Vault is locked")?;
