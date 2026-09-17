@@ -14,12 +14,19 @@ function avatarClass(name: string) {
 
 const YEAR_SECS = 365 * 86400;
 
+/** When the password was last rotated. Editing a note or URL bumps
+ *  `updated_at`, so that is only a fallback for entries saved before the
+ *  backend started tracking the password date separately. */
+function passwordAge(entry: Entry): number {
+  return entry.password_changed_at ?? entry.updated_at;
+}
+
 interface Audit {
   /** Groups of entries sharing the same password, largest first */
   reused: Entry[][];
   /** Entries whose password scores Weak or Fair */
   weak: { entry: Entry; score: number }[];
-  /** Entries not updated in over a year, oldest first */
+  /** Entries whose password has not changed in over a year, oldest first */
   stale: Entry[];
   issueCount: number;
 }
@@ -43,8 +50,8 @@ function runAudit(entries: Entry[]): Audit {
 
   const cutoff = Date.now() / 1000 - YEAR_SECS;
   const stale = entries
-    .filter((e) => e.updated_at < cutoff)
-    .sort((a, b) => a.updated_at - b.updated_at);
+    .filter((e) => passwordAge(e) < cutoff)
+    .sort((a, b) => passwordAge(a) - passwordAge(b));
 
   const issueCount =
     reused.reduce((n, g) => n + g.length, 0) + weak.length + stale.length;
@@ -204,14 +211,14 @@ export default function SecurityView({ entries, onSelect }: {
       {/* Stale passwords */}
       <Section
         icon={<History size={14} strokeWidth={2} />}
-        title="Not updated in over a year"
+        title="Not changed in over a year"
         count={audit.stale.length}
         tone="var(--warning, #F59E0B)"
-        empty="Every password was touched within the last year."
+        empty="Every password was changed within the last year."
       >
         {audit.stale.map((entry) => (
           <EntryRow key={entry.id} entry={entry} onSelect={onSelect}
-            detail={ageLabel(entry.updated_at)} detailColor="var(--muted)" />
+            detail={ageLabel(passwordAge(entry))} detailColor="var(--muted)" />
         ))}
       </Section>
     </div>
