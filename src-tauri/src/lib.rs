@@ -264,7 +264,7 @@ async fn update_entry(
     folder_id: Option<String>,
     totp_secret: Option<String>,
     state: State<'_, VaultState>,
-) -> Result<(), String> {
+) -> Result<Entry, String> {
     let mut guard = state.lock().unwrap();
     let s = &mut *guard;
     let key = s.key.as_deref().ok_or("Vault is locked")?;

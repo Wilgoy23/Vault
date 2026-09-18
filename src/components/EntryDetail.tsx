@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Copy, Check, Eye, EyeOff, Pencil, Trash2, X, Save, ShieldCheck } from "lucide-react";
+import { Copy, Check, Eye, EyeOff, Pencil, Trash2, X, Save, ShieldCheck, History, ChevronDown } from "lucide-react";
 import { Entry, Folder } from "../types";
 import { updateEntry, writeClipboardText, scheduleClipboardClear, markEntryUsed } from "../api";
 import { generateTOTP, totpSecondsLeft } from "../utils/totp";
@@ -139,6 +139,113 @@ function TotpDisplay({ secret, copied, onCopy }: {
   );
 }
 
+/** Compact relative age, e.g. "3d ago". */
+function timeAgo(unixSecs: number): string {
+  const secs = Math.floor(Date.now() / 1000 - unixSecs);
+  if (secs < 60) return "just now";
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  return `${Math.floor(secs / 86400)}d ago`;
+}
+
+/** Past passwords, newest first, each restorable. Restoring is just another
+ *  password change: the current one is pushed onto the history in turn. */
+function PasswordHistory({ entry, copied, onCopy, onRestore }: {
+  entry: Entry;
+  copied: string | null;
+  onCopy: (id: string, val: string) => void;
+  onRestore: (password: string) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [shown, setShown] = useState<number | null>(null);
+  const [confirming, setConfirming] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const history = entry.password_history ?? [];
+
+  // Collapse and forget any revealed password when switching entries
+  useEffect(() => {
+    setOpen(false);
+    setShown(null);
+    setConfirming(null);
+  }, [entry.id]);
+
+  if (history.length === 0) return null;
+
+  const newestFirst = history.map((p, i) => ({ ...p, i })).reverse();
+
+  const restore = async (password: string) => {
+    setBusy(true);
+    try {
+      await onRestore(password);
+      setShown(null);
+      setConfirming(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: "14px" }}>
+      <button
+        className="btn-ghost"
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          display: "flex", alignItems: "center", gap: "6px",
+          fontSize: "12px", padding: "5px 8px", color: "var(--muted)",
+        }}
+      >
+        <History size={12} strokeWidth={2} />
+        Password history ({history.length})
+        <ChevronDown
+          size={12}
+          strokeWidth={2}
+          style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}
+        />
+      </button>
+
+      {open && (
+        <div className="field-card" style={{ marginTop: "8px" }}>
+          {newestFirst.map((past) => (
+            <div key={past.i} className="field-row">
+              <span className="field-label-col" style={{ fontVariantNumeric: "tabular-nums" }}>
+                {timeAgo(past.replaced_at)}
+              </span>
+              <div className="field-divider-v" />
+              <div className="field-body">
+                <span className="field-val mono">
+                  {shown === past.i ? past.password : "●".repeat(Math.min(past.password.length, 20))}
+                </span>
+                <button
+                  className="btn-action"
+                  onClick={() => setShown(shown === past.i ? null : past.i)}
+                  title={shown === past.i ? "Hide" : "Show"}
+                >
+                  {shown === past.i ? <EyeOff size={12} strokeWidth={2} /> : <Eye size={12} strokeWidth={2} />}
+                </button>
+                <CopyBtn id={`history-${past.i}`} value={past.password} copied={copied} onCopy={onCopy} />
+                <button
+                  className="btn-ghost"
+                  disabled={busy}
+                  onClick={() => (confirming === past.i ? restore(past.password) : setConfirming(past.i))}
+                  onBlur={() => setConfirming((c) => (c === past.i ? null : c))}
+                  title="Make this the current password again"
+                  style={{
+                    fontSize: "11px", padding: "3px 8px",
+                    color: confirming === past.i ? "var(--accent)" : "var(--muted)",
+                  }}
+                >
+                  {confirming === past.i ? "Confirm" : "Restore"}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ClipboardBanner({ countdown }: { countdown: number | null }) {
   if (countdown === null) return null;
   return (
@@ -194,7 +301,9 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
       return;
     }
     try {
-      await updateEntry({
+      // The backend returns the saved entry, so the password history and
+      // timestamps it maintains don't have to be guessed at here
+      const saved = await updateEntry({
         id: entry.id,
         name: form.name,
         username: form.username || undefined,
@@ -205,10 +314,32 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
         folderId: form.folder_id || undefined,
         totpSecret: form.totp_secret || undefined,
       });
-      onUpdated({ ...form, updated_at: Date.now() / 1000 });
+      onUpdated(saved);
       setEditing(false);
     } catch (err: any) {
       setError(err?.toString() ?? "Failed to save.");
+    }
+  };
+
+  // Restoring is a normal password change, so the one being replaced is
+  // pushed onto the history like any other.
+  const handleRestore = async (password: string) => {
+    setError("");
+    try {
+      const saved = await updateEntry({
+        id: entry.id,
+        name: entry.name,
+        username: entry.username || undefined,
+        email: entry.email,
+        password,
+        url: entry.url || undefined,
+        notes: entry.notes || undefined,
+        folderId: entry.folder_id || undefined,
+        totpSecret: entry.totp_secret || undefined,
+      });
+      onUpdated(saved);
+    } catch (err: any) {
+      setError(err?.toString() ?? "Failed to restore that password.");
     }
   };
 
@@ -222,13 +353,6 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
   const avClass = avatarClass(entry.name);
   const strength = passwordStrength(entry.password);
 
-  const updatedAgo = (() => {
-    const secs = Math.floor(Date.now() / 1000 - entry.updated_at);
-    if (secs < 60) return "just now";
-    if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
-    if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
-    return `${Math.floor(secs / 86400)}d ago`;
-  })();
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -250,7 +374,7 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
               <div className="detail-meta-row">
                 {entry.url && <><span>{entry.url.replace(/^https?:\/\//, "")}</span><div className="detail-meta-dot" /></>}
                 {currentFolder && <><span>{currentFolder.name}</span><div className="detail-meta-dot" /></>}
-                <span>Updated {updatedAgo}</span>
+                <span>Updated {timeAgo(entry.updated_at)}</span>
               </div>
             </div>
           </div>
@@ -424,6 +548,10 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
           )}
 
         </div>
+
+        {!editing && (
+          <PasswordHistory entry={entry} copied={copied} onCopy={copy} onRestore={handleRestore} />
+        )}
 
         {error && <p className="error" style={{ marginTop: "12px" }}>{error}</p>}
       </div>

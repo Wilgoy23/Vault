@@ -331,7 +331,8 @@ pub fn add_entry(
     Ok(entry)
 }
 
-/// Updates an existing entry by id and saves the vault.
+/// Updates an existing entry by id and saves the vault, returning the
+/// entry as it now stands.
 pub fn update_entry(
     key: &[u8; 32],
     data: &mut VaultData,
@@ -344,7 +345,7 @@ pub fn update_entry(
     notes: Option<String>,
     folder_id: Option<String>,
     totp_secret: Option<String>,
-) -> Result<(), String> {
+) -> Result<Entry, String> {
     let entry = data
         .entries
         .iter_mut()
@@ -375,7 +376,11 @@ pub fn update_entry(
     entry.totp_secret = totp_secret;
     entry.updated_at = now;
 
-    save_vault(key, data)
+    // Returned so the caller doesn't have to reproduce the history rules
+    // above to know what the entry now looks like.
+    let updated = entry.clone();
+    save_vault(key, data)?;
+    Ok(updated)
 }
 
 /// Adds a new folder and saves the vault.
@@ -645,14 +650,19 @@ mod tests {
         create_vault("password").unwrap();
         let (key, mut data) = unlock_vault("password").unwrap();
         let entry = sample_entry(&key, &mut data, "Rotating", "first");
+        let entry_id = entry.id.clone();
 
+        let mut returned = entry;
         for pw in ["second", "third"] {
-            update_entry(
-                &key, &mut data, &entry.id,
+            returned = update_entry(
+                &key, &mut data, &entry_id,
                 "Rotating".into(), None, "user@example.com".into(), pw.into(),
                 None, None, None, None,
             ).unwrap();
         }
+        // The returned entry reflects the save, so callers need not re-read
+        assert_eq!(returned.password, "third");
+        assert_eq!(returned.password_history.len(), 2);
 
         let (_key2, data2) = unlock_vault("password").unwrap();
         let stored = &data2.entries[0];

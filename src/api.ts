@@ -43,7 +43,7 @@ export const updateEntry = (payload: {
   notes?: string;
   folderId?: string;
   totpSecret?: string;
-}) => invoke<void>("update_entry", payload);
+}) => invoke<Entry>("update_entry", payload);
 
 export const listFolders = () =>
   invoke<Folder[]>("list_folders");
