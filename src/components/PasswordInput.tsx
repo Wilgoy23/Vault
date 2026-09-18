@@ -1,7 +1,11 @@
 import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { RefreshCw, Wand2 } from "lucide-react";
-import { generatePassword, GenOptions, DEFAULT_OPTIONS } from "../utils/passwordGen";
+import {
+  generatePassword, GenOptions, DEFAULT_OPTIONS,
+  generatePassphrase, PassphraseOptions, DEFAULT_PASSPHRASE,
+  passphraseEntropyBits, SEPARATORS,
+} from "../utils/passwordGen";
 
 interface Props {
   value: string;
@@ -15,7 +19,9 @@ const POPOVER_WIDTH = 300;
 
 export default function PasswordInput({ value, onChange }: Props) {
   const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState<"password" | "passphrase">("password");
   const [opts, setOpts] = useState<GenOptions>({ ...DEFAULT_OPTIONS });
+  const [phraseOpts, setPhraseOpts] = useState<PassphraseOptions>({ ...DEFAULT_PASSPHRASE });
   const [preview, setPreview] = useState("");
   const [coords, setCoords] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const anchorRef = useRef<HTMLDivElement>(null);
@@ -58,8 +64,17 @@ export default function PasswordInput({ value, onChange }: Props) {
   }, [open]);
 
   const refreshPreview = (o: GenOptions) => setPreview(generatePassword(o));
+  const refreshPhrase = (o: PassphraseOptions) => setPreview(generatePassphrase(o));
 
-  const openGenerator = () => { refreshPreview(opts); setOpen(true); };
+  const regenerate = (next: "password" | "passphrase" = mode) =>
+    next === "password" ? refreshPreview(opts) : refreshPhrase(phraseOpts);
+
+  const switchMode = (next: "password" | "passphrase") => {
+    setMode(next);
+    regenerate(next);
+  };
+
+  const openGenerator = () => { refreshPreview(opts); setMode("password"); setOpen(true); };
 
   const applyPassword = () => { onChange(preview); setOpen(false); };
 
@@ -75,6 +90,12 @@ export default function PasswordInput({ value, onChange }: Props) {
     const next = { ...opts, length: len };
     setOpts(next);
     refreshPreview(next);
+  };
+
+  const setPhrase = (patch: Partial<PassphraseOptions>) => {
+    const next = { ...phraseOpts, ...patch };
+    setPhraseOpts(next);
+    refreshPhrase(next);
   };
 
   const strength = (() => {
@@ -118,6 +139,27 @@ export default function PasswordInput({ value, onChange }: Props) {
             boxShadow: "0 12px 40px rgba(0,0,0,0.6), 0 0 40px rgba(30,80,200,0.10)",
           }}
         >
+          {/* Mode */}
+          <div style={{ display: "flex", gap: "4px", marginBottom: "12px" }}>
+            {([["password", "Password"], ["passphrase", "Passphrase"]] as const).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => switchMode(key)}
+                style={{
+                  flex: 1, padding: "5px 0", fontSize: "12px", fontWeight: 600,
+                  borderRadius: "var(--radius)",
+                  border: `1px solid ${mode === key ? "var(--accent)" : "var(--border)"}`,
+                  background: mode === key ? "var(--accent-tint)" : "transparent",
+                  color: mode === key ? "var(--accent)" : "var(--muted)",
+                  cursor: "pointer", transition: "all 0.15s",
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
           {/* Preview */}
           <div style={{
             fontFamily: "monospace", fontSize: "13px",
@@ -131,13 +173,19 @@ export default function PasswordInput({ value, onChange }: Props) {
 
           {/* Strength + refresh */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-            <span style={{ fontSize: "12px", color: strength.color, fontWeight: 600 }}>
-              {strength.label}
-            </span>
+            {mode === "password" ? (
+              <span style={{ fontSize: "12px", color: strength.color, fontWeight: 600 }}>
+                {strength.label}
+              </span>
+            ) : (
+              <span style={{ fontSize: "12px", color: "var(--muted)" }}>
+                ~{Math.round(passphraseEntropyBits(phraseOpts))} bits of entropy
+              </span>
+            )}
             <button
               type="button"
               className="btn-icon"
-              onClick={() => refreshPreview(opts)}
+              onClick={() => regenerate()}
               title="Regenerate"
               style={{ width: "28px", height: "28px" }}
             >
@@ -145,41 +193,105 @@ export default function PasswordInput({ value, onChange }: Props) {
             </button>
           </div>
 
-          {/* Length slider */}
-          <div style={{ marginBottom: "12px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", color: "var(--muted)", marginBottom: "4px" }}>
-              <span>Length</span>
-              <span style={{ color: "var(--text)", fontWeight: 600 }}>{opts.length}</span>
+          {mode === "password" ? (
+            <>
+            {/* Length slider */}
+            <div style={{ marginBottom: "12px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", color: "var(--muted)", marginBottom: "4px" }}>
+                <span>Length</span>
+                <span style={{ color: "var(--text)", fontWeight: 600 }}>{opts.length}</span>
+              </div>
+              <input
+                type="range" min={8} max={64} value={opts.length}
+                onChange={(e) => setLength(Number(e.target.value))}
+                style={{ width: "100%", accentColor: "var(--accent)" }}
+              />
             </div>
-            <input
-              type="range" min={8} max={64} value={opts.length}
-              onChange={(e) => setLength(Number(e.target.value))}
-              style={{ width: "100%", accentColor: "var(--accent)" }}
-            />
-          </div>
 
-          {/* Character set toggles */}
-          <div style={{ display: "flex", gap: "6px", marginBottom: "14px", flexWrap: "wrap" }}>
-            {([ ["upper", "A–Z"], ["numbers", "0–9"], ["symbols", "!@#"] ] as const).map(([key, label]) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => toggleOpt(key)}
-                style={{
-                  padding: "4px 10px", fontSize: "12px", borderRadius: "var(--radius)",
-                  border: `1px solid ${opts[key] ? "var(--accent)" : "var(--border)"}`,
-                  background: opts[key] ? "rgba(77,157,224,0.12)" : "transparent",
-                  color: opts[key] ? "var(--accent)" : "var(--muted)",
-                  cursor: "pointer", transition: "all 0.15s",
-                }}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+            {/* Character set toggles */}
+            <div style={{ display: "flex", gap: "6px", marginBottom: "14px", flexWrap: "wrap" }}>
+              {([ ["upper", "A–Z"], ["numbers", "0–9"], ["symbols", "!@#"] ] as const).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => toggleOpt(key)}
+                  style={{
+                    padding: "4px 10px", fontSize: "12px", borderRadius: "var(--radius)",
+                    border: `1px solid ${opts[key] ? "var(--accent)" : "var(--border)"}`,
+                    background: opts[key] ? "rgba(77,157,224,0.12)" : "transparent",
+                    color: opts[key] ? "var(--accent)" : "var(--muted)",
+                    cursor: "pointer", transition: "all 0.15s",
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            </>
+          ) : (
+            <>
+              {/* Word count */}
+              <div style={{ marginBottom: "12px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", color: "var(--muted)", marginBottom: "4px" }}>
+                  <span>Words</span>
+                  <span style={{ color: "var(--text)", fontWeight: 600 }}>{phraseOpts.words}</span>
+                </div>
+                <input
+                  type="range" min={3} max={10} value={phraseOpts.words}
+                  onChange={(e) => setPhrase({ words: Number(e.target.value) })}
+                  style={{ width: "100%", accentColor: "var(--accent)" }}
+                />
+              </div>
+
+              {/* Separator */}
+              <div style={{ marginBottom: "12px" }}>
+                <div style={{ fontSize: "12px", color: "var(--muted)", marginBottom: "4px" }}>Separator</div>
+                <div style={{ display: "flex", gap: "6px" }}>
+                  {SEPARATORS.map((sep) => (
+                    <button
+                      key={sep}
+                      type="button"
+                      onClick={() => setPhrase({ separator: sep })}
+                      title={sep === " " ? "Space" : `"${sep}"`}
+                      style={{
+                        width: "34px", padding: "4px 0", fontSize: "12px",
+                        fontFamily: "var(--mono)", borderRadius: "var(--radius)",
+                        border: `1px solid ${phraseOpts.separator === sep ? "var(--accent)" : "var(--border)"}`,
+                        background: phraseOpts.separator === sep ? "var(--accent-tint)" : "transparent",
+                        color: phraseOpts.separator === sep ? "var(--accent)" : "var(--muted)",
+                        cursor: "pointer", transition: "all 0.15s",
+                      }}
+                    >
+                      {sep === " " ? "␣" : sep}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Extras */}
+              <div style={{ display: "flex", gap: "6px", marginBottom: "14px", flexWrap: "wrap" }}>
+                {([["capitalize", "Capitalise"], ["number", "Add digit"]] as const).map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setPhrase({ [key]: !phraseOpts[key] })}
+                    style={{
+                      padding: "4px 10px", fontSize: "12px", borderRadius: "var(--radius)",
+                      border: `1px solid ${phraseOpts[key] ? "var(--accent)" : "var(--border)"}`,
+                      background: phraseOpts[key] ? "var(--accent-tint)" : "transparent",
+                      color: phraseOpts[key] ? "var(--accent)" : "var(--muted)",
+                      cursor: "pointer", transition: "all 0.15s",
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
 
           <button type="button" className="btn-primary" onClick={applyPassword} style={{ width: "100%", fontSize: "13px" }}>
-            Use this password
+            {mode === "password" ? "Use this password" : "Use this passphrase"}
           </button>
         </div>,
         document.body

@@ -1,3 +1,5 @@
+import { EFF_SHORT_WORDLIST } from "./wordlist";
+
 export interface GenOptions {
   length: number;
   upper: boolean;
@@ -51,4 +53,45 @@ export function generatePassword(opts: GenOptions = DEFAULT_OPTIONS): string {
     [all[i], all[j]] = [all[j], all[i]];
   }
   return all.join("");
+}
+
+// ── Passphrases ──────────────────────────────────────────────────────────────
+
+export interface PassphraseOptions {
+  words: number;
+  separator: string;
+  capitalize: boolean;
+  /** Append a digit to one randomly chosen word, for sites that demand one */
+  number: boolean;
+}
+
+export const DEFAULT_PASSPHRASE: PassphraseOptions = {
+  words: 5,
+  separator: "-",
+  capitalize: false,
+  number: false,
+};
+
+export const SEPARATORS = ["-", ".", "_", " "] as const;
+
+/** Entropy of the word choices alone, in bits. Capitalisation and the
+ *  appended digit are left out: an attacker who knows the scheme gains
+ *  little from them, so counting them would overstate the strength. */
+export function passphraseEntropyBits(opts: PassphraseOptions): number {
+  return opts.words * Math.log2(EFF_SHORT_WORDLIST.length);
+}
+
+export function generatePassphrase(opts: PassphraseOptions = DEFAULT_PASSPHRASE): string {
+  const count = Math.max(1, Math.floor(opts.words));
+  const words = Array.from({ length: count }, () => {
+    const word = EFF_SHORT_WORDLIST[randInt(EFF_SHORT_WORDLIST.length)];
+    return opts.capitalize ? word.charAt(0).toUpperCase() + word.slice(1) : word;
+  });
+
+  if (opts.number) {
+    const at = randInt(words.length);
+    words[at] += randInt(10);
+  }
+
+  return words.join(opts.separator);
 }
