@@ -214,6 +214,136 @@ fn lock_and_notify(app: &tauri::AppHandle) {
     let _ = app.emit("vault-locked", ());
 }
 
+// ── Lock on suspend / screen lock ─────────────────────────────────────────────
+//
+// Inactivity auto-lock only fires while the app is running and the user is at
+// the machine. Walking away and locking the screen, or closing a laptop lid,
+// should scrub the key too. Both are watched by one polling thread rather than
+// a Win32 message loop, so the same code works whatever the platform offers.
+
+/// Whether the user has asked for this. Off by default so behaviour only
+/// changes for people who turn it on.
+#[cfg(desktop)]
+struct LockOnSystemEvents(std::sync::atomic::AtomicBool);
+
+#[cfg(desktop)]
+const WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// True when the wall clock jumped much further than the monotonic clock over
+/// the same interval, which means the machine was suspended in between.
+/// `Instant` is frozen while a Windows machine sleeps; `SystemTime` is not.
+#[cfg(desktop)]
+fn was_suspended(wall_gap: std::time::Duration, monotonic_gap: std::time::Duration) -> bool {
+    // Ordinary scheduling jitter is milliseconds. Anything past this is a gap
+    // in which the process was not running at all.
+    const TOLERANCE: std::time::Duration = std::time::Duration::from_secs(10);
+    wall_gap > monotonic_gap + TOLERANCE
+}
+
+/// True when the Windows session is showing the secure desktop, which is what
+/// Win+L and the screensaver password prompt switch to. A normal-privilege
+/// process cannot open that desktop at all, so a failure here counts as locked.
+#[cfg(all(desktop, target_os = "windows"))]
+fn screen_is_locked() -> bool {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::StationsAndDesktops::{
+        CloseDesktop, GetUserObjectInformationW, OpenInputDesktop, DESKTOP_READOBJECTS,
+        DF_ALLOWOTHERACCOUNTHOOK, UOI_NAME,
+    };
+
+    unsafe {
+        let Ok(desktop) = OpenInputDesktop(DF_ALLOWOTHERACCOUNTHOOK, false, DESKTOP_READOBJECTS)
+        else {
+            return true;
+        };
+
+        let mut buf = [0u16; 256];
+        let mut needed = 0u32;
+        let ok = GetUserObjectInformationW(
+            HANDLE(desktop.0),
+            UOI_NAME,
+            Some(buf.as_mut_ptr() as *mut _),
+            (buf.len() * 2) as u32,
+            Some(&mut needed),
+        )
+        .is_ok();
+        let _ = CloseDesktop(desktop);
+
+        if !ok {
+            return false;
+        }
+        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        // "Default" is the interactive desktop; "Winlogon" and "Screen-saver"
+        // are the ones shown when the session is locked.
+        !String::from_utf16_lossy(&buf[..len]).eq_ignore_ascii_case("Default")
+    }
+}
+
+#[cfg(all(desktop, not(target_os = "windows")))]
+fn screen_is_locked() -> bool {
+    // No detection implemented for this platform yet; suspend is still caught.
+    false
+}
+
+/// Polls for suspend and screen lock, locking the vault when either happens
+/// and the setting is on.
+#[cfg(desktop)]
+fn watch_for_system_lock(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        let mut last_wall = std::time::SystemTime::now();
+        let mut last_monotonic = std::time::Instant::now();
+        let mut was_locked = screen_is_locked();
+
+        loop {
+            std::thread::sleep(WATCH_INTERVAL);
+
+            let wall_gap = std::time::SystemTime::now()
+                .duration_since(last_wall)
+                .unwrap_or_default();
+            let monotonic_gap = last_monotonic.elapsed();
+            last_wall = std::time::SystemTime::now();
+            last_monotonic = std::time::Instant::now();
+
+            let locked_now = screen_is_locked();
+            // Only the transition counts, or the vault could not be unlocked
+            // from the overlay while the screensaver desktop is still up.
+            let just_locked = locked_now && !was_locked;
+            was_locked = locked_now;
+
+            let enabled = app
+                .try_state::<LockOnSystemEvents>()
+                .map(|s| s.0.load(std::sync::atomic::Ordering::Relaxed))
+                .unwrap_or(false);
+            if !enabled {
+                continue;
+            }
+
+            if just_locked || was_suspended(wall_gap, monotonic_gap) {
+                let unlocked = app
+                    .try_state::<VaultState>()
+                    .map(|s| s.lock().unwrap().key.is_some())
+                    .unwrap_or(false);
+                if unlocked {
+                    lock_and_notify(&app);
+                }
+            }
+        }
+    });
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+fn set_lock_on_system_events(enabled: bool, state: State<'_, LockOnSystemEvents>) {
+    state.0.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(mobile)]
+#[tauri::command]
+fn set_lock_on_system_events(enabled: bool) {
+    // iOS locks on backgrounding instead; nothing to poll here.
+    let _ = enabled;
+}
+
 #[tauri::command]
 fn lock(app: tauri::AppHandle) {
     lock_and_notify(&app);
@@ -800,6 +930,7 @@ pub fn run() {
             set_overlay_shortcut,
             write_clipboard_text,
             schedule_clipboard_clear,
+            set_lock_on_system_events,
         ])
         .setup(|app| {
             // On mobile, store the vault inside the app sandbox
@@ -809,7 +940,11 @@ pub fn run() {
             vault::set_vault_dir(app.path().app_data_dir()?);
 
             #[cfg(desktop)]
-            setup_desktop(app)?;
+            {
+                setup_desktop(app)?;
+                app.manage(LockOnSystemEvents(std::sync::atomic::AtomicBool::new(false)));
+                watch_for_system_lock(app.handle().clone());
+            }
 
             Ok(())
         })
@@ -825,4 +960,40 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(all(test, desktop))]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn ordinary_ticks_are_not_mistaken_for_suspend() {
+        // The two clocks track each other while the process is running, give
+        // or take scheduling jitter
+        assert!(!was_suspended(Duration::from_secs(2), Duration::from_secs(2)));
+        assert!(!was_suspended(Duration::from_millis(2300), Duration::from_secs(2)));
+        assert!(!was_suspended(Duration::from_secs(11), Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn a_wall_clock_jump_is_read_as_suspend() {
+        // Laptop lid closed for an hour: the monotonic clock barely moved
+        assert!(was_suspended(Duration::from_secs(3600), Duration::from_secs(2)));
+        assert!(was_suspended(Duration::from_secs(60), Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn a_backwards_wall_clock_is_not_a_suspend() {
+        // A clock correction can make the gap zero or negative; saturating
+        // subtraction leaves it at zero, which must not trigger a lock
+        assert!(!was_suspended(Duration::ZERO, Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn checking_the_desktop_does_not_panic() {
+        // Value depends on whether the screen is locked right now, so only
+        // the call itself is under test
+        let _ = screen_is_locked();
+    }
 }

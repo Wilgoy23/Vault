@@ -16,6 +16,10 @@ export const lock = () =>
 export const changeMasterPassword = (currentPassword: string, newPassword: string) =>
   invoke<void>("change_master_password", { currentPassword, newPassword });
 
+/** Lock the vault when the screen locks or the machine sleeps. */
+export const setLockOnSystemEvents = (enabled: boolean) =>
+  invoke<void>("set_lock_on_system_events", { enabled });
+
 export const isUnlocked = () =>
   invoke<boolean>("is_unlocked");
 

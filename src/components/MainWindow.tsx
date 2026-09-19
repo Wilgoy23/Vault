@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Lock, Settings, ShieldCheck, ArrowLeft } from "lucide-react";
 import { useIsMobile } from "../utils/platform";
 import { useAutoLock } from "../utils/useAutoLock";
-import { listEntries, listFolders, lock, isAutostartEnabled, addFolder, renameFolder, deleteFolder, deleteEntry } from "../api";
+import { listEntries, listFolders, lock, isAutostartEnabled, setLockOnSystemEvents, addFolder, renameFolder, deleteFolder, deleteEntry } from "../api";
 import { Entry, Folder } from "../types";
 import EntryList from "./EntryList";
 import EntryDetail from "./EntryDetail";
@@ -19,6 +19,8 @@ interface PendingDelete {
   commit: () => Promise<void>;
   restore: () => void;
 }
+
+const LOCK_ON_SYSTEM_KEY = "vault.lockOnSystemEvents";
 
 interface Props {
   onLocked: () => void;
@@ -40,6 +42,9 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
   const [showSettings, setShowSettings] = useState(false);
   const [showSecurity, setShowSecurity] = useState(false);
   const [autostart, setAutostart] = useState(false);
+  const [lockOnSystem, setLockOnSystem] = useState(
+    () => localStorage.getItem(LOCK_ON_SYSTEM_KEY) === "true"
+  );
   const [editTrigger, setEditTrigger] = useState(0);
   const [undoToast, setUndoToast] = useState<{ message: string; deadline: number } | null>(null);
   const pendingDelete = useRef<PendingDelete | null>(null);
@@ -101,6 +106,8 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
     listEntries().then(setEntries);
     listFolders().then(setFolders);
     isAutostartEnabled().then(setAutostart).catch(() => {});
+    // The backend watcher starts disabled, so tell it the stored preference
+    setLockOnSystemEvents(lockOnSystem).catch(() => {});
   }, []);
 
   // ── Deferred deletion with Undo ──────────────────────────────────────────
@@ -155,6 +162,12 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
   const handleAuditSelect = (entry: Entry) => {
     setSelected(entry);
     setShowSecurity(false);
+  };
+
+  const handleLockOnSystemChange = async (enabled: boolean) => {
+    await setLockOnSystemEvents(enabled);
+    localStorage.setItem(LOCK_ON_SYSTEM_KEY, String(enabled));
+    setLockOnSystem(enabled);
   };
 
   const handleUpdated = (updated: Entry) => {
@@ -335,6 +348,8 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
           onTimeoutChange={onTimeoutChange}
           autostart={autostart}
           onAutostartChange={setAutostart}
+          lockOnSystem={lockOnSystem}
+          onLockOnSystemChange={handleLockOnSystemChange}
           shortcut={shortcut}
           onShortcutChange={onShortcutChange}
           onImported={() => { setShowSettings(false); onLocked(); }}

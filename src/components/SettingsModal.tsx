@@ -22,6 +22,8 @@ interface Props {
   onTimeoutChange: (ms: number) => void;
   autostart: boolean;
   onAutostartChange: (v: boolean) => void;
+  lockOnSystem: boolean;
+  onLockOnSystemChange: (v: boolean) => Promise<void>;
   shortcut: string;
   onShortcutChange: (s: string) => Promise<void>;
   onImported: () => void;
@@ -33,6 +35,7 @@ export default function SettingsModal({
   themeId, onThemeChange,
   timeoutMs, onTimeoutChange,
   autostart, onAutostartChange,
+  lockOnSystem, onLockOnSystemChange,
   shortcut, onShortcutChange,
   onImported, onCsvImported, onClose,
 }: Props) {
@@ -130,6 +133,16 @@ export default function SettingsModal({
                 ))}
               </select>
             </Row>
+            {/* Polling for the secure desktop is desktop-only; iOS locks on
+                backgrounding instead */}
+            {!isMobile && (
+              <Row label="Lock on screen lock or sleep">
+                <Toggle
+                  active={lockOnSystem}
+                  onToggle={() => { onLockOnSystemChange(!lockOnSystem).catch(() => {}); }}
+                />
+              </Row>
+            )}
             <ChangeMasterPassword />
           </Section>
 
