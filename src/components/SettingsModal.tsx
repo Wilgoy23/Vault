@@ -24,6 +24,9 @@ interface Props {
   onAutostartChange: (v: boolean) => void;
   lockOnSystem: boolean;
   onLockOnSystemChange: (v: boolean) => Promise<void>;
+  helloAvailable: boolean;
+  helloEnabled: boolean;
+  onHelloChange: (v: boolean) => Promise<void>;
   shortcut: string;
   onShortcutChange: (s: string) => Promise<void>;
   onImported: () => void;
@@ -36,6 +39,7 @@ export default function SettingsModal({
   timeoutMs, onTimeoutChange,
   autostart, onAutostartChange,
   lockOnSystem, onLockOnSystemChange,
+  helloAvailable, helloEnabled, onHelloChange,
   shortcut, onShortcutChange,
   onImported, onCsvImported, onClose,
 }: Props) {
@@ -44,6 +48,20 @@ export default function SettingsModal({
       if (autostart) { await disableAutostart(); onAutostartChange(false); }
       else { await enableAutostart(); onAutostartChange(true); }
     } catch (e) { console.error("Autostart toggle failed:", e); }
+  };
+
+  const [helloError, setHelloError] = useState("");
+
+  const handleHelloToggle = async () => {
+    setHelloError("");
+    try {
+      await onHelloChange(!helloEnabled);
+    } catch (e: any) {
+      const message = e?.toString() ?? "";
+      if (!message.includes("Cancelled")) {
+        setHelloError(message || "Windows Hello could not be set up.");
+      }
+    }
   };
 
   const [confirmImport, setConfirmImport] = useState(false);
@@ -141,6 +159,15 @@ export default function SettingsModal({
                   active={lockOnSystem}
                   onToggle={() => { onLockOnSystemChange(!lockOnSystem).catch(() => {}); }}
                 />
+              </Row>
+            )}
+            {/* Only offered where Hello is actually enrolled */}
+            {helloAvailable && (
+              <Row label="Quick unlock with Windows Hello">
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "4px" }}>
+                  <Toggle active={helloEnabled} onToggle={handleHelloToggle} />
+                  {helloError && <span className="error" style={{ fontSize: "11px" }}>{helloError}</span>}
+                </div>
               </Row>
             )}
             <ChangeMasterPassword />

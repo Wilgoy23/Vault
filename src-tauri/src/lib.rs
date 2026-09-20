@@ -7,6 +7,8 @@
 
 mod crypto;
 mod csv_import;
+#[cfg(all(desktop, target_os = "windows"))]
+mod hello;
 mod vault;
 
 use std::sync::Mutex;
@@ -212,6 +214,132 @@ fn lock_and_notify(app: &tauri::AppHandle) {
         s.data = None;
     }
     let _ = app.emit("vault-locked", ());
+}
+
+// ── Windows Hello quick unlock ────────────────────────────────────────────────
+//
+// See hello.rs for the design. The vault key is wrapped with a key only the
+// TPM can reproduce, and the wrapped copy lives here in memory for the life of
+// the process. Nothing is written to disk, so a cold start always needs the
+// master password.
+
+/// The vault key, encrypted under a key that Hello alone can reproduce.
+#[cfg(all(desktop, target_os = "windows"))]
+struct ArmedQuickUnlock {
+    /// Signed by the Hello credential to regenerate the wrapping key
+    challenge: [u8; 32],
+    /// base64(nonce || AES-GCM ciphertext) of the 32-byte vault key
+    wrapped_key: String,
+}
+
+#[cfg(all(desktop, target_os = "windows"))]
+struct QuickUnlock(Mutex<Option<ArmedQuickUnlock>>);
+
+/// Whether this machine can do Hello at all. The UI hides the option when not.
+#[tauri::command]
+fn quick_unlock_available() -> bool {
+    #[cfg(all(desktop, target_os = "windows"))]
+    return hello::is_available();
+    #[cfg(not(all(desktop, target_os = "windows")))]
+    false
+}
+
+/// Whether a key is currently wrapped and waiting, so the lock screen knows
+/// whether to offer the Hello button.
+#[tauri::command]
+fn quick_unlock_armed(_app: tauri::AppHandle) -> bool {
+    #[cfg(all(desktop, target_os = "windows"))]
+    return _app
+        .try_state::<QuickUnlock>()
+        .map(|s| s.0.lock().unwrap().is_some())
+        .unwrap_or(false);
+    #[cfg(not(all(desktop, target_os = "windows")))]
+    false
+}
+
+/// Wraps the current vault key so Hello can reopen it later. Prompts for the
+/// gesture once, here, while the user is present — not at lock time, when
+/// they have walked away.
+#[tauri::command]
+async fn arm_quick_unlock(_app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(all(desktop, target_os = "windows"))]
+    {
+        let state = _app.try_state::<VaultState>().ok_or("Vault is locked")?;
+        let key = {
+            let s = state.lock().unwrap();
+            let key = s.key.as_deref().ok_or("Vault is locked")?;
+            Zeroizing::new(*key)
+        };
+
+        let mut challenge = [0u8; 32];
+        {
+            use rand::RngCore;
+            rand::thread_rng().fill_bytes(&mut challenge);
+        }
+
+        let wrapping_key = hello::derive_wrapping_key(&challenge)?;
+        let wrapped_key = crypto::encrypt(&key[..], &wrapping_key)?;
+
+        let armed = _app.try_state::<QuickUnlock>().ok_or("Quick unlock unavailable")?;
+        *armed.0.lock().unwrap() = Some(ArmedQuickUnlock { challenge, wrapped_key });
+        Ok(())
+    }
+    #[cfg(not(all(desktop, target_os = "windows")))]
+    Err("Windows Hello is not available on this platform".into())
+}
+
+/// Reopens the vault with the wrapped key, after a Hello gesture. Returns an
+/// error the lock screen can show; the master password always still works.
+#[tauri::command]
+async fn quick_unlock(_app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(all(desktop, target_os = "windows"))]
+    {
+        let armed = _app.try_state::<QuickUnlock>().ok_or("Quick unlock unavailable")?;
+        let (challenge, wrapped_key) = {
+            let guard = armed.0.lock().unwrap();
+            let a = guard.as_ref().ok_or("Quick unlock is not set up")?;
+            (a.challenge, a.wrapped_key.clone())
+        };
+
+        let wrapping_key = hello::derive_wrapping_key(&challenge)?;
+        let unwrapped = crypto::decrypt(&wrapped_key, &wrapping_key)?;
+        if unwrapped.len() != 32 {
+            return Err("Quick unlock data is corrupt".into());
+        }
+        let mut key = Zeroizing::new([0u8; 32]);
+        key.copy_from_slice(&unwrapped);
+
+        // The vault file may have been replaced (a backup import) since the
+        // key was wrapped, in which case this key no longer opens it.
+        let data = vault::unlock_with_key(&key).map_err(|_| {
+            "The vault has changed since quick unlock was set up. Use your master password."
+                .to_string()
+        })?;
+
+        let state = _app.try_state::<VaultState>().ok_or("Vault is unavailable")?;
+        let mut s = state.lock().unwrap();
+        s.key = Some(key);
+        s.data = Some(data);
+        drop(s);
+
+        let _ = _app.emit("vault-unlocked", ());
+        Ok(())
+    }
+    #[cfg(not(all(desktop, target_os = "windows")))]
+    Err("Windows Hello is not available on this platform".into())
+}
+
+/// Drops the wrapped key and deletes Vault's Hello credential, for when the
+/// user turns the feature off.
+#[tauri::command]
+fn disarm_quick_unlock(_app: tauri::AppHandle) {
+    #[cfg(all(desktop, target_os = "windows"))]
+    {
+        if let Some(armed) = _app.try_state::<QuickUnlock>() {
+            *armed.0.lock().unwrap() = None;
+        }
+        hello::forget();
+    }
 }
 
 // ── Lock on suspend / screen lock ─────────────────────────────────────────────
@@ -931,6 +1059,11 @@ pub fn run() {
             write_clipboard_text,
             schedule_clipboard_clear,
             set_lock_on_system_events,
+            quick_unlock_available,
+            quick_unlock_armed,
+            arm_quick_unlock,
+            quick_unlock,
+            disarm_quick_unlock,
         ])
         .setup(|app| {
             // On mobile, store the vault inside the app sandbox
@@ -943,6 +1076,8 @@ pub fn run() {
             {
                 setup_desktop(app)?;
                 app.manage(LockOnSystemEvents(std::sync::atomic::AtomicBool::new(false)));
+                #[cfg(target_os = "windows")]
+                app.manage(QuickUnlock(Mutex::new(None)));
                 watch_for_system_lock(app.handle().clone());
             }
 

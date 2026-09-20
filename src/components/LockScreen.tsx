@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { ShieldCheck, Lock, Eye, EyeOff, Check } from "lucide-react";
-import { createVault, unlock, vaultExists } from "../api";
+import { ShieldCheck, Lock, Eye, EyeOff, Check, Fingerprint } from "lucide-react";
+import { createVault, unlock, vaultExists, quickUnlockArmed, quickUnlock } from "../api";
 import MasterPasswordMeter from "./MasterPasswordMeter";
 
 interface Props {
@@ -14,10 +14,31 @@ export default function LockScreen({ onUnlocked }: Props) {
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [helloArmed, setHelloArmed] = useState(false);
+  const [helloBusy, setHelloBusy] = useState(false);
 
   useEffect(() => {
     vaultExists().then((exists) => setIsNew(!exists));
+    // False off Windows, and whenever this session has not unlocked yet
+    quickUnlockArmed().then(setHelloArmed).catch(() => {});
   }, []);
+
+  const handleHello = async () => {
+    setError("");
+    setHelloBusy(true);
+    try {
+      await quickUnlock();
+      onUnlocked();
+    } catch (err: any) {
+      const message = err?.toString() ?? "";
+      // Walking away from the prompt is not an error worth shouting about
+      if (!message.includes("Cancelled")) {
+        setError(message || "Windows Hello could not unlock the vault.");
+      }
+    } finally {
+      setHelloBusy(false);
+    }
+  };
 
   const confirmMismatch = isNew === true && confirm.length > 0 && confirm !== password;
   const confirmMatches = isNew === true && confirm.length > 0 && confirm === password;
@@ -137,6 +158,23 @@ export default function LockScreen({ onUnlocked }: Props) {
             {loading ? "Please wait…" : isNew ? "Create vault" : "Unlock"}
           </button>
         </form>
+
+        {!isNew && helloArmed && (
+          <button
+            type="button"
+            className="btn-ghost"
+            onClick={handleHello}
+            disabled={helloBusy}
+            style={{
+              width: "100%", marginTop: "10px", padding: "9px 0",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: "7px",
+              fontSize: "13px",
+            }}
+          >
+            <Fingerprint size={15} strokeWidth={2} />
+            {helloBusy ? "Waiting for Windows Hello…" : "Unlock with Windows Hello"}
+          </button>
+        )}
       </div>
     </div>
   );

@@ -205,8 +205,8 @@ pub fn create_vault(master_password: &str) -> Result<(), String> {
     write_vault_file(&path, &json_file)
 }
 
-/// Loads and decrypts the vault. Returns the key (held in app state) and the data.
-pub fn unlock_vault(master_password: &str) -> Result<(Zeroizing<[u8; 32]>, VaultData), String> {
+/// Reads the vault file and checks it is a format this build understands.
+fn read_vault_file() -> Result<VaultFile, String> {
     let raw = fs::read_to_string(vault_path()?)
         .map_err(|_| "Vault file not found".to_string())?;
 
@@ -218,17 +218,31 @@ pub fn unlock_vault(master_password: &str) -> Result<(Zeroizing<[u8; 32]>, Vault
             file.version
         ));
     }
+    Ok(file)
+}
+
+fn parse_vault_data(file: &VaultFile, key: &[u8; 32]) -> Result<VaultData, String> {
+    let plaintext = crypto::decrypt(&file.ciphertext, key)?;
+    serde_json::from_slice(&plaintext).map_err(|e| format!("Failed to parse vault: {e}"))
+}
+
+/// Loads and decrypts the vault. Returns the key (held in app state) and the data.
+pub fn unlock_vault(master_password: &str) -> Result<(Zeroizing<[u8; 32]>, VaultData), String> {
+    let file = read_vault_file()?;
 
     // Always derive with the parameters the file was written with, not the
     // current defaults, or raising the cost would lock users out.
     let key = crypto::derive_key_with(master_password, &file.salt_bytes()?, file.kdf)?;
 
-    let plaintext = crypto::decrypt(&file.ciphertext, &key)?;
-
-    let data: VaultData = serde_json::from_slice(&plaintext)
-        .map_err(|e| format!("Failed to parse vault: {e}"))?;
-
+    let data = parse_vault_data(&file, &key)?;
     Ok((key, data))
+}
+
+/// Opens the vault with a key already in hand, for quick unlock, where the
+/// key was kept (wrapped) from an earlier master-password unlock rather than
+/// derived again. Fails if the vault file has been replaced since.
+pub fn unlock_with_key(key: &[u8; 32]) -> Result<VaultData, String> {
+    parse_vault_data(&read_vault_file()?, key)
 }
 
 /// Re-encrypts the vault under a new master password. Verifies the current
@@ -872,6 +886,34 @@ mod tests {
         let (_key2, data2) = unlock_vault("password").unwrap();
         assert_eq!(data2.entries[0].username.as_deref(), Some("admin"));
         assert!(data2.entries[0].email.is_empty());
+    }
+
+    #[test]
+    fn unlock_with_key_reopens_the_vault_without_the_password() {
+        let _g = vault_test();
+        create_vault("password").unwrap();
+        let (key, mut data) = unlock_vault("password").unwrap();
+        sample_entry(&key, &mut data, "Quick", "pw");
+
+        // What quick unlock does: same key, no password, no derivation
+        let reopened = unlock_with_key(&key).unwrap();
+        assert_eq!(reopened.entries[0].name, "Quick");
+
+        let wrong = crypto::derive_key("other-password", &crypto::generate_salt()).unwrap();
+        assert!(unlock_with_key(&wrong).is_err());
+    }
+
+    #[test]
+    fn unlock_with_key_fails_after_the_vault_is_replaced() {
+        let _g = vault_test();
+        create_vault("password").unwrap();
+        let (key, _data) = unlock_vault("password").unwrap();
+
+        // A backup import swaps in a vault encrypted under a different key
+        fs::remove_file(vault_path().unwrap()).unwrap();
+        create_vault("a-different-password").unwrap();
+
+        assert!(unlock_with_key(&key).is_err());
     }
 
     #[test]

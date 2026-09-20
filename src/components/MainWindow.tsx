@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Lock, Settings, ShieldCheck, ArrowLeft } from "lucide-react";
 import { useIsMobile } from "../utils/platform";
 import { useAutoLock } from "../utils/useAutoLock";
-import { listEntries, listFolders, lock, isAutostartEnabled, setLockOnSystemEvents, addFolder, renameFolder, deleteFolder, deleteEntry } from "../api";
+import { listEntries, listFolders, lock, isAutostartEnabled, setLockOnSystemEvents, quickUnlockAvailable, quickUnlockArmed, armQuickUnlock, disarmQuickUnlock, addFolder, renameFolder, deleteFolder, deleteEntry } from "../api";
 import { Entry, Folder } from "../types";
 import EntryList from "./EntryList";
 import EntryDetail from "./EntryDetail";
@@ -21,6 +21,7 @@ interface PendingDelete {
 }
 
 const LOCK_ON_SYSTEM_KEY = "vault.lockOnSystemEvents";
+const QUICK_UNLOCK_KEY = "vault.quickUnlock";
 
 interface Props {
   onLocked: () => void;
@@ -44,6 +45,10 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
   const [autostart, setAutostart] = useState(false);
   const [lockOnSystem, setLockOnSystem] = useState(
     () => localStorage.getItem(LOCK_ON_SYSTEM_KEY) === "true"
+  );
+  const [helloAvailable, setHelloAvailable] = useState(false);
+  const [helloEnabled, setHelloEnabled] = useState(
+    () => localStorage.getItem(QUICK_UNLOCK_KEY) === "true"
   );
   const [editTrigger, setEditTrigger] = useState(0);
   const [undoToast, setUndoToast] = useState<{ message: string; deadline: number } | null>(null);
@@ -108,6 +113,16 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
     isAutostartEnabled().then(setAutostart).catch(() => {});
     // The backend watcher starts disabled, so tell it the stored preference
     setLockOnSystemEvents(lockOnSystem).catch(() => {});
+
+    quickUnlockAvailable().then(setHelloAvailable).catch(() => {});
+    // Wrapping the key needs one Hello gesture while the vault is open, so it
+    // happens here, right after unlocking, rather than when the vault locks
+    // and the user has walked away.
+    if (helloEnabled) {
+      quickUnlockArmed()
+        .then((armed) => (armed ? null : armQuickUnlock()))
+        .catch(() => {});
+    }
   }, []);
 
   // ── Deferred deletion with Undo ──────────────────────────────────────────
@@ -168,6 +183,17 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
     await setLockOnSystemEvents(enabled);
     localStorage.setItem(LOCK_ON_SYSTEM_KEY, String(enabled));
     setLockOnSystem(enabled);
+  };
+
+  const handleHelloChange = async (enabled: boolean) => {
+    if (enabled) {
+      // Throws if the gesture is cancelled, leaving the setting off
+      await armQuickUnlock();
+    } else {
+      await disarmQuickUnlock();
+    }
+    localStorage.setItem(QUICK_UNLOCK_KEY, String(enabled));
+    setHelloEnabled(enabled);
   };
 
   const handleUpdated = (updated: Entry) => {
@@ -350,6 +376,9 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
           onAutostartChange={setAutostart}
           lockOnSystem={lockOnSystem}
           onLockOnSystemChange={handleLockOnSystemChange}
+          helloAvailable={helloAvailable}
+          helloEnabled={helloEnabled}
+          onHelloChange={handleHelloChange}
           shortcut={shortcut}
           onShortcutChange={onShortcutChange}
           onImported={() => { setShowSettings(false); onLocked(); }}

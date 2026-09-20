@@ -16,6 +16,25 @@ export const lock = () =>
 export const changeMasterPassword = (currentPassword: string, newPassword: string) =>
   invoke<void>("change_master_password", { currentPassword, newPassword });
 
+/** Windows Hello quick unlock. Nothing is stored on disk: the wrapped key
+ *  lives in the backend process only, so a cold start needs the master
+ *  password. Every one of these is a no-op returning false off Windows. */
+export const quickUnlockAvailable = () =>
+  invoke<boolean>("quick_unlock_available");
+
+export const quickUnlockArmed = () =>
+  invoke<boolean>("quick_unlock_armed");
+
+/** Prompts for the Hello gesture once, while the vault is open. */
+export const armQuickUnlock = () =>
+  invoke<void>("arm_quick_unlock");
+
+export const quickUnlock = () =>
+  invoke<void>("quick_unlock");
+
+export const disarmQuickUnlock = () =>
+  invoke<void>("disarm_quick_unlock");
+
 /** Lock the vault when the screen locks or the machine sleeps. */
 export const setLockOnSystemEvents = (enabled: boolean) =>
   invoke<void>("set_lock_on_system_events", { enabled });
