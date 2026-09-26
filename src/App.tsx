@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { vaultExists, isUnlocked, getOverlayShortcut, setOverlayShortcut } from "./api";
+import { vaultExists, isUnlocked, getOverlayShortcut, setOverlayShortcut, lock, nativeDialogOpen } from "./api";
 import LockScreen from "./components/LockScreen";
 import MainWindow from "./components/MainWindow";
 import { useIsMobile } from "./utils/platform";
@@ -137,6 +137,23 @@ export default function App() {
     await setOverlayShortcut(s);
     setShortcut(s);
   };
+
+  // Mobile: lock as soon as the app leaves the foreground. The webview's
+  // visibility is the only lifecycle signal the frontend gets on Android and
+  // iOS, and it flips when the OS backgrounds the app — including when the
+  // screen is turned off or the app switcher is opened.
+  useEffect(() => {
+    if (!isMobile || screen !== "main") return;
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "hidden") return;
+      // A native file picker hides the webview too; that is not the app going
+      // away, and locking there would break an import mid-flight.
+      if (nativeDialogOpen()) return;
+      lock().catch(() => {});
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [isMobile, screen]);
 
   useEffect(() => {
     const unlistenUnlocked = listen("vault-unlocked", () => setScreen("main"));

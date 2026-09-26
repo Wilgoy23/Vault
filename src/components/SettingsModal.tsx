@@ -151,8 +151,8 @@ export default function SettingsModal({
                 ))}
               </select>
             </Row>
-            {/* Polling for the secure desktop is desktop-only; iOS locks on
-                backgrounding instead */}
+            {/* Polling for the secure desktop is desktop-only; mobile locks
+                whenever the app leaves the foreground instead (App.tsx) */}
             {!isMobile && (
               <Row label="Lock on screen lock or sleep">
                 <Toggle

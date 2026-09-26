@@ -468,7 +468,8 @@ fn set_lock_on_system_events(enabled: bool, state: State<'_, LockOnSystemEvents>
 #[cfg(mobile)]
 #[tauri::command]
 fn set_lock_on_system_events(enabled: bool) {
-    // iOS locks on backgrounding instead; nothing to poll here.
+    // Mobile locks whenever the app leaves the foreground, driven from the
+    // frontend; nothing to poll here.
     let _ = enabled;
 }
 

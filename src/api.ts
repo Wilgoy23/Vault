@@ -90,11 +90,29 @@ export const markEntryUsed = (id: string) =>
 
 // The save/open dialogs run on the Rust side so file paths never transit IPC.
 // Both resolve to false when the user cancels the dialog.
+
+// A native picker takes over the screen on mobile, which hides the webview.
+// That looks exactly like the app being backgrounded, so the lock-on-background
+// watcher checks this before locking — otherwise choosing a file to import
+// would lock the vault out from under the import.
+let openDialogs = 0;
+
+const withNativeDialog = async <T>(run: () => Promise<T>): Promise<T> => {
+  openDialogs++;
+  try {
+    return await run();
+  } finally {
+    openDialogs--;
+  }
+};
+
+export const nativeDialogOpen = () => openDialogs > 0;
+
 export const exportVault = () =>
-  invoke<boolean>("export_vault");
+  withNativeDialog(() => invoke<boolean>("export_vault"));
 
 export const importVault = () =>
-  invoke<boolean>("import_vault");
+  withNativeDialog(() => invoke<boolean>("import_vault"));
 
 export interface CsvImportReport {
   imported: number;
@@ -103,7 +121,7 @@ export interface CsvImportReport {
 
 // Resolves to null when the user cancels the file dialog.
 export const importCsv = () =>
-  invoke<CsvImportReport | null>("import_csv");
+  withNativeDialog(() => invoke<CsvImportReport | null>("import_csv"));
 
 export const enableAutostart = () =>
   invoke<void>("enable_autostart");
