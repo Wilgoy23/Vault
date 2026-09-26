@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Lock, Settings, ShieldCheck, ArrowLeft } from "lucide-react";
 import { useIsMobile } from "../utils/platform";
 import { useAutoLock } from "../utils/useAutoLock";
+import { useBackLayer } from "../utils/useBackLayer";
 import { listEntries, listFolders, lock, isAutostartEnabled, setLockOnSystemEvents, quickUnlockAvailable, quickUnlockArmed, armQuickUnlock, disarmQuickUnlock, addFolder, renameFolder, deleteFolder, deleteEntry } from "../api";
 import { Entry, Folder } from "../types";
 import EntryList from "./EntryList";
@@ -55,6 +56,13 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
   const pendingDelete = useRef<PendingDelete | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const isMobile = useIsMobile();
+
+  // Android's back button dismisses one layer at a time, innermost first,
+  // rather than dropping the user out of the app.
+  useBackLayer(isMobile && showAdd, () => setShowAdd(false));
+  useBackLayer(isMobile && showSettings, () => setShowSettings(false));
+  useBackLayer(isMobile && showSecurity, () => setShowSecurity(false));
+  useBackLayer(isMobile && !showAdd && !showSettings && !showSecurity && !!selected, () => setSelected(null));
 
   const filteredEntries = useMemo(() => {
     const q = search.toLowerCase();
