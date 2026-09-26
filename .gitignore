@@ -28,5 +28,47 @@ graphify-out/
 *.sw?
 *.tsbuildinfo
 
+# Local-only notes and build guides
 CLAUDE.md
 IOS_BUILD.md
+ANDROID_BUILD.md
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Vault data. The app exports encrypted backups and imports CSVs that hold
+# passwords in plain text (Settings warns about this) -- neither belongs in
+# a repo, least of all this one.
+*.enc
+*.csv
+vault-backup*
+
+# Android signing material. Leaking a keystore is unrecoverable: it is the
+# only thing that can ever sign an update to a published app.
+*.jks
+*.keystore
+*.p12
+*.pepk
+key.properties
+keystore.properties
+local.properties
+
+# Android / Gradle build output. The generated project under
+# src-tauri/gen/android ignores its own; these catch anything outside it.
+.gradle/
+.cxx/
+*.apk
+*.aab
+*.aar
+
+# iOS. src-tauri/gen/apple itself is meant to be committed -- these are the
+# per-user and secret parts of it.
+xcuserdata/
+*.xcuserstate
+DerivedData/
+*.mobileprovision
+*.p8
+*.cer
+*.certSigningRequest
