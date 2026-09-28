@@ -1,0 +1,92 @@
+name: iOS build
+
+# Builds an unsigned Vault.ipa for sideloading with AltStore / Sideloadly,
+# which re-sign it with the user's own Apple ID on install. Manual trigger
+# only: macOS runner minutes are expensive, and a weekly AltStore refresh
+# re-signs the installed app without needing a new build. The push trigger
+# lets the workflow be exercised from ios-dev before it reaches main (the
+# manual button only appears for workflows on the default branch).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ios-dev]
+    paths: [.github/workflows/ios.yml]
+
+jobs:
+  build-ios:
+    name: Unsigned .ipa
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ios-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: ios-cargo-
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          brew install xcodegen
+
+      # src-tauri/gen/apple can only be generated on macOS, so it is created
+      # here when the repo doesn't carry it. Info.ios.plist is merged in.
+      - name: Generate Xcode project
+        run: |
+          if [ ! -d src-tauri/gen/apple ]; then
+            npm run tauri ios init -- --ci
+          fi
+
+      # The Rust side embeds dist/ at compile time; xcodebuild won't run
+      # beforeBuildCommand, so build the frontend first.
+      - name: Build frontend
+        run: npm run build
+
+      # Archive without code signing. The project's "Build Rust Code" phase
+      # compiles the Rust library through `tauri ios xcode-script`.
+      - name: Build app
+        run: |
+          PROJECT=$(ls -d src-tauri/gen/apple/*.xcodeproj | head -n 1)
+          SCHEME=$(xcodebuild -list -json -project "$PROJECT" | jq -r '.project.schemes[] | select(endswith("_iOS"))' | head -n 1)
+          echo "Building $SCHEME from $PROJECT"
+          xcodebuild archive \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Vault.xcarchive" \
+            ARCHS=arm64 \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package .ipa
+        run: |
+          APP=$(ls -d "$RUNNER_TEMP"/Vault.xcarchive/Products/Applications/*.app | head -n 1)
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry "$GITHUB_WORKSPACE/Vault.ipa" Payload)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Vault-ipa
+          path: Vault.ipa
+          retention-days: 30
