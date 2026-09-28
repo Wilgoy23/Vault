@@ -54,33 +54,30 @@ jobs:
             npm run tauri ios init -- --ci
           fi
 
-      # The Rust side embeds dist/ at compile time; xcodebuild won't run
-      # beforeBuildCommand, so build the frontend first.
-      - name: Build frontend
-        run: npm run build
-
-      # Archive without code signing. The project's "Build Rust Code" phase
-      # compiles the Rust library through `tauri ios xcode-script`.
+      # The project's "Build Rust Code" phase only works while `tauri ios
+      # build` is running (it fetches the CLI options from it), so xcodebuild
+      # can't be called directly. Instead signing is switched off for every
+      # xcodebuild invocation via XCODE_XCCONFIG_FILE. The archive then
+      # succeeds unsigned; the export step after it needs signing and fails,
+      # which is expected -- the .app is taken from the archive instead.
       - name: Build app
         run: |
-          PROJECT=$(ls -d src-tauri/gen/apple/*.xcodeproj | head -n 1)
-          SCHEME=$(xcodebuild -list -json -project "$PROJECT" | jq -r '.project.schemes[] | select(endswith("_iOS"))' | head -n 1)
-          echo "Building $SCHEME from $PROJECT"
-          xcodebuild archive \
-            -project "$PROJECT" \
-            -scheme "$SCHEME" \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -archivePath "$RUNNER_TEMP/Vault.xcarchive" \
-            ARCHS=arm64 \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY=""
+          cat > "$RUNNER_TEMP/unsigned.xcconfig" <<'EOF'
+          CODE_SIGNING_ALLOWED = NO
+          CODE_SIGNING_REQUIRED = NO
+          CODE_SIGN_IDENTITY =
+          EOF
+          export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/unsigned.xcconfig"
+          npm run tauri ios build -- --ci || echo "::warning::tauri ios build exited non-zero (expected: unsigned export)"
 
       - name: Package .ipa
         run: |
-          APP=$(ls -d "$RUNNER_TEMP"/Vault.xcarchive/Products/Applications/*.app | head -n 1)
+          ARCHIVE=$(find src-tauri/gen/apple ~/Library/Developer/Xcode/Archives -name '*.xcarchive' -type d 2>/dev/null | head -n 1)
+          if [ -z "$ARCHIVE" ]; then
+            echo "::error::No .xcarchive produced -- the archive step itself failed, see the build log"
+            exit 1
+          fi
+          APP=$(ls -d "$ARCHIVE"/Products/Applications/*.app | head -n 1)
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
           cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
           (cd "$RUNNER_TEMP/ipa" && zip -qry "$GITHUB_WORKSPACE/Vault.ipa" Payload)
