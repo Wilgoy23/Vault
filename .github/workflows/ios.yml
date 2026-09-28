@@ -54,20 +54,25 @@ jobs:
             npm run tauri ios init -- --ci
           fi
 
+      # Switch signing off in the generated project itself: drop any existing
+      # signing keys from every buildSettings block and add NO overrides.
+      # (XCODE_XCCONFIG_FILE doesn't reach the xcodebuild tauri spawns.)
+      - name: Disable code signing
+        run: |
+          PBXPROJ=$(ls src-tauri/gen/apple/*.xcodeproj/project.pbxproj | head -n 1)
+          perl -0pi -e '
+            s/^\s*"?CODE_SIGN(?:ING_ALLOWED|ING_REQUIRED|_IDENTITY)[^;]*;\n//mg;
+            s/(buildSettings = \{\n)/$1\t\t\t\tCODE_SIGNING_ALLOWED = NO;\n\t\t\t\tCODE_SIGNING_REQUIRED = NO;\n\t\t\t\tCODE_SIGN_IDENTITY = "";\n/g;
+          ' "$PBXPROJ"
+          grep -c 'CODE_SIGNING_ALLOWED = NO' "$PBXPROJ"
+
       # The project's "Build Rust Code" phase only works while `tauri ios
       # build` is running (it fetches the CLI options from it), so xcodebuild
-      # can't be called directly. Instead signing is switched off for every
-      # xcodebuild invocation via XCODE_XCCONFIG_FILE. The archive then
-      # succeeds unsigned; the export step after it needs signing and fails,
-      # which is expected -- the .app is taken from the archive instead.
+      # can't be called directly. The archive succeeds unsigned; the export
+      # step after it needs signing and fails, which is expected -- the .app
+      # is taken from the archive instead.
       - name: Build app
         run: |
-          cat > "$RUNNER_TEMP/unsigned.xcconfig" <<'EOF'
-          CODE_SIGNING_ALLOWED = NO
-          CODE_SIGNING_REQUIRED = NO
-          CODE_SIGN_IDENTITY =
-          EOF
-          export XCODE_XCCONFIG_FILE="$RUNNER_TEMP/unsigned.xcconfig"
           npm run tauri ios build -- --ci || echo "::warning::tauri ios build exited non-zero (expected: unsigned export)"
 
       - name: Package .ipa
