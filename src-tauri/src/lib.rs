@@ -5,6 +5,8 @@
 // Mobile uses the clipboard-manager plugin and the iOS/Android sandbox
 // app-data directory for vault storage.
 
+#[cfg(target_os = "ios")]
+mod autofill;
 mod crypto;
 mod csv_import;
 #[cfg(all(desktop, target_os = "windows"))]
@@ -179,6 +181,9 @@ async fn unlock(mut password: String, state: State<'_, VaultState>) -> Result<()
     let result = vault::unlock_vault(&password);
     password.zeroize();
     let (key, data) = result?;
+    // Catches up on changes AutoFill can't have seen, such as a backup import
+    #[cfg(target_os = "ios")]
+    autofill::refresh(&data);
     let mut s = state.lock().unwrap();
     s.key = Some(key);
     s.data = Some(data);
@@ -339,6 +344,47 @@ fn disarm_quick_unlock(_app: tauri::AppHandle) {
             *armed.0.lock().unwrap() = None;
         }
         hello::forget();
+    }
+}
+
+// ── iOS Password AutoFill ─────────────────────────────────────────────────────
+//
+// See autofill.rs. Enabling needs the vault open, since it publishes the
+// current entries; after that, unlocks and vault writes keep it current.
+
+#[derive(serde::Serialize)]
+struct AutofillStatus {
+    supported: bool,
+    enabled: bool,
+}
+
+#[tauri::command]
+fn autofill_status() -> AutofillStatus {
+    #[cfg(target_os = "ios")]
+    return AutofillStatus {
+        supported: autofill::is_supported(),
+        enabled: autofill::is_enabled(),
+    };
+    #[cfg(not(target_os = "ios"))]
+    AutofillStatus { supported: false, enabled: false }
+}
+
+#[tauri::command]
+async fn set_autofill_enabled(enabled: bool, _state: State<'_, VaultState>) -> Result<(), String> {
+    #[cfg(target_os = "ios")]
+    {
+        if enabled {
+            let s = _state.lock().unwrap();
+            autofill::publish(s.data.as_ref().ok_or("Vault is locked")?)
+        } else {
+            autofill::disable();
+            Ok(())
+        }
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        let _ = enabled;
+        Err("AutoFill is only available on iOS".into())
     }
 }
 
@@ -1065,6 +1111,8 @@ pub fn run() {
             arm_quick_unlock,
             quick_unlock,
             disarm_quick_unlock,
+            autofill_status,
+            set_autofill_enabled,
         ])
         .setup(|app| {
             // On mobile, store the vault inside the app sandbox

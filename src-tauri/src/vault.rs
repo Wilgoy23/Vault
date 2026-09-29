@@ -298,7 +298,12 @@ pub fn save_vault(key: &[u8; 32], data: &VaultData) -> Result<(), String> {
     };
 
     let out = serde_json::to_string(&updated).map_err(|e| e.to_string())?;
-    write_vault_file(&path, &out)
+    write_vault_file(&path, &out)?;
+
+    // Every entry and folder change comes through here
+    #[cfg(target_os = "ios")]
+    crate::autofill::refresh(data);
+    Ok(())
 }
 
 fn now_secs() -> u64 {
