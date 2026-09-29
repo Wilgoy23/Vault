@@ -35,6 +35,15 @@ export const quickUnlock = () =>
 export const disarmQuickUnlock = () =>
   invoke<void>("disarm_quick_unlock");
 
+/** iOS Password AutoFill. `supported` is false off iOS, and on builds that
+ *  lack the App Group the extension reads from. Enabling needs the vault
+ *  open; after that the backend keeps it current on every unlock and save. */
+export const autofillStatus = () =>
+  invoke<{ supported: boolean; enabled: boolean }>("autofill_status");
+
+export const setAutofillEnabled = (enabled: boolean) =>
+  invoke<void>("set_autofill_enabled", { enabled });
+
 /** Lock the vault when the screen locks or the machine sleeps. */
 export const setLockOnSystemEvents = (enabled: boolean) =>
   invoke<void>("set_lock_on_system_events", { enabled });

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Palette, Shield, Monitor, Database, X, Keyboard } from "lucide-react";
 import { THEMES, Theme } from "../themes";
-import { exportVault, importVault, importCsv, enableAutostart, disableAutostart, changeMasterPassword } from "../api";
+import { exportVault, importVault, importCsv, enableAutostart, disableAutostart, changeMasterPassword, autofillStatus, setAutofillEnabled } from "../api";
 import MasterPasswordMeter from "./MasterPasswordMeter";
 import ConfirmDialog from "./ConfirmDialog";
 import { useIsMobile } from "../utils/platform";
@@ -61,6 +61,24 @@ export default function SettingsModal({
       if (!message.includes("Cancelled")) {
         setHelloError(message || "Windows Hello could not be set up.");
       }
+    }
+  };
+
+  const [autofill, setAutofill] = useState({ supported: false, enabled: false });
+  const [autofillError, setAutofillError] = useState("");
+
+  useEffect(() => {
+    autofillStatus().then(setAutofill).catch(() => {});
+  }, []);
+
+  const handleAutofillToggle = async () => {
+    setAutofillError("");
+    const enabled = !autofill.enabled;
+    try {
+      await setAutofillEnabled(enabled);
+      setAutofill({ ...autofill, enabled });
+    } catch (e: any) {
+      setAutofillError(e?.toString() || "AutoFill could not be set up.");
     }
   };
 
@@ -168,6 +186,20 @@ export default function SettingsModal({
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "4px" }}>
                   <Toggle active={helloEnabled} onToggle={handleHelloToggle} />
                   {helloError && <span className="error" style={{ fontSize: "11px" }}>{helloError}</span>}
+                </div>
+              </Row>
+            )}
+            {/* iOS only, and only in builds that carry the extension's App Group */}
+            {autofill.supported && (
+              <Row label="Password AutoFill">
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "4px" }}>
+                  <Toggle active={autofill.enabled} onToggle={handleAutofillToggle} />
+                  {autofillError && <span className="error" style={{ fontSize: "11px" }}>{autofillError}</span>}
+                  {autofill.enabled && !autofillError && (
+                    <span style={{ fontSize: "11px", opacity: 0.7, textAlign: "right" }}>
+                      Also turn on Vault in iOS Settings → General → AutoFill &amp; Passwords
+                    </span>
+                  )}
                 </div>
               </Row>
             )}
