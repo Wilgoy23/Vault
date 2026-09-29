@@ -36,7 +36,7 @@
   --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
 }
 
-html, body { height: 100%; }
+html, body, #root { height: 100%; }
 
 body {
   color: var(--text);

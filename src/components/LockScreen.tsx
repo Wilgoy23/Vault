@@ -62,7 +62,7 @@ export default function LockScreen({ onUnlocked }: Props) {
   if (isNew === null) return null;
 
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh" }}>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
       <div className="glass" style={{
         borderRadius: "var(--radius-lg)", padding: "40px", width: "min(360px, calc(100vw - 24px))",
         boxShadow: "0 8px 48px rgba(0,0,0,0.5), 0 0 80px rgba(30,80,200,0.12)",

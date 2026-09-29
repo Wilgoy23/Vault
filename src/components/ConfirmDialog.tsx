@@ -37,6 +37,7 @@ export default function ConfirmDialog({
     <div
       style={{
         position: "fixed", inset: 0, background: "rgba(3,8,20,0.55)",
+        padding: "env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)",
         backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)",
         display: "flex", alignItems: "center", justifyContent: "center", zIndex: 300,
       }}

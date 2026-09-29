@@ -169,7 +169,7 @@ export default function App() {
     return (
       <>
         {!isMobile && <ContextMenu />}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
           <span style={{ color: "var(--muted)" }}>Loading…</span>
         </div>
       </>

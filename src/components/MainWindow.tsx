@@ -260,7 +260,7 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {/* Titlebar */}
       <div className="glass titlebar" style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",

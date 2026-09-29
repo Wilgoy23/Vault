@@ -20,7 +20,7 @@ export default function UndoToast({ message, deadline, onUndo }: Props) {
 
   return (
     <div style={{
-      position: "fixed", bottom: "18px", left: "50%", transform: "translateX(-50%)",
+      position: "fixed", bottom: "calc(18px + env(safe-area-inset-bottom))", left: "50%", transform: "translateX(-50%)",
       zIndex: 200, display: "flex", alignItems: "center", gap: "12px",
       padding: "9px 10px 9px 16px",
       background: "rgba(8,18,40,0.92)",
