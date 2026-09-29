@@ -53,7 +53,7 @@ jobs:
       - name: Install dependencies
         run: |
           npm ci
-          brew install xcodegen
+          brew install xcodegen ldid
 
       # src-tauri/gen/apple can only be generated on macOS, so it is created
       # here when the repo doesn't carry it. Info.ios.plist is merged in.
@@ -62,6 +62,12 @@ jobs:
           if [ ! -d src-tauri/gen/apple ]; then
             npm run tauri ios init -- --ci
           fi
+
+      # Adds the Password AutoFill extension and the app's Swift bridge to it
+      # (src/autofill.rs links against that bridge). Must run before signing
+      # is switched off below, which edits the project this regenerates.
+      - name: Add AutoFill extension
+        run: ruby src-tauri/ios/patch-xcode-project.rb
 
       # Switch signing off in the generated project itself: drop any existing
       # signing keys from every buildSettings block and add NO overrides.
@@ -92,6 +98,17 @@ jobs:
             exit 1
           fi
           APP=$(ls -d "$ARCHIVE"/Products/Applications/*.app | head -n 1)
+
+          # Unsigned builds carry no entitlements, and AltStore / Sideloadly
+          # read the ones to request from the binaries. Ad-hoc sign with
+          # ldid to embed them: the extension first, then the app around it.
+          APPEX="$APP/PlugIns/VaultAutoFill.appex"
+          if [ ! -d "$APPEX" ]; then
+            echo "::error::VaultAutoFill.appex missing from the build"
+            exit 1
+          fi
+          ldid -Ssrc-tauri/ios/Config/AutoFill.entitlements "$APPEX/VaultAutoFill"
+          ldid -Ssrc-tauri/ios/Config/App.entitlements "$APP/$(plutil -extract CFBundleExecutable raw "$APP/Info.plist")"
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
           cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
           (cd "$RUNNER_TEMP/ipa" && zip -qry "$GITHUB_WORKSPACE/Vault.ipa" Payload)
