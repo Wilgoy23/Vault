@@ -4,14 +4,23 @@ name: iOS build
 # which re-sign it with the user's own Apple ID on install. Manual trigger
 # only: macOS runner minutes are expensive, and a weekly AltStore refresh
 # re-signs the installed app without needing a new build. The push trigger
-# lets the workflow be exercised from ios-dev before it reaches main (the
-# manual button only appears for workflows on the default branch).
+# builds ios-dev whenever app code or this workflow changes (the manual
+# button only appears for workflows on the default branch).
 
 on:
   workflow_dispatch:
   push:
     branches: [ios-dev]
-    paths: [.github/workflows/ios.yml]
+    paths:
+      - .github/workflows/ios.yml
+      - src/**
+      - src-tauri/**
+      - "!src-tauri/gen/android/**"
+      - public/**
+      - index.html
+      - package.json
+      - package-lock.json
+      - vite.config.ts
 
 jobs:
   build-ios:
