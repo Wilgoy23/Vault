@@ -23,7 +23,8 @@ A local, end-to-end encrypted password manager built with Tauri 2, React, and Ru
 - **Themes** — multiple colour themes switchable from Settings
 - **Autostart** — optional launch on system boot
 - **Import / Export** — encrypted vault backups
-- **Fully local** — no cloud, no sync, no telemetry
+- **Sync folder (optional)** — keep the encrypted vault in a OneDrive, Dropbox, iCloud Drive or Syncthing folder; changes from each device are merged entry by entry, and conflict copies are folded back in automatically
+- **Fully local** — no Vault servers and no telemetry; sync only ever moves the encrypted file, through a folder you choose
 
 ---
 
