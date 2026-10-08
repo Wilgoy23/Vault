@@ -13,6 +13,7 @@ mod csv_import;
 mod hello;
 mod vault;
 
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
 use vault::{Entry, Folder, VaultData};
@@ -165,7 +166,18 @@ fn vault_exists() -> bool {
 // thread pool.
 
 #[tauri::command]
-async fn create_vault(mut password: String, state: State<'_, VaultState>) -> Result<(), String> {
+async fn create_vault(
+    mut password: String,
+    state: State<'_, VaultState>,
+    sync: State<'_, SyncFolder>,
+) -> Result<(), String> {
+    // A sync folder that isn't there (an unmounted drive, a sync client not
+    // signed in) must not get a fresh empty vault that later clashes with the
+    // real one when it reappears.
+    if sync.lock().unwrap().folder.as_deref().is_some_and(|f| !f.is_dir()) {
+        password.zeroize();
+        return Err("Your sync folder isn't available. Reconnect it and restart Vault.".into());
+    }
     // Immediately unlock after creation; wipe the password either way
     let result = vault::create_vault(&password).and_then(|_| vault::unlock_vault(&password));
     password.zeroize();
@@ -180,7 +192,9 @@ async fn create_vault(mut password: String, state: State<'_, VaultState>) -> Res
 async fn unlock(mut password: String, state: State<'_, VaultState>) -> Result<(), String> {
     let result = vault::unlock_vault(&password);
     password.zeroize();
-    let (key, data) = result?;
+    let (key, mut data) = result?;
+    // Folds in conflict copies a sync client left while the vault was locked
+    let _ = vault::sync(&key, &mut data);
     // Catches up on changes AutoFill can't have seen, such as a backup import
     #[cfg(target_os = "ios")]
     autofill::refresh(&data);
@@ -198,8 +212,12 @@ async fn change_master_password(
 ) -> Result<(), String> {
     let mut guard = state.lock().unwrap();
     let s = &mut *guard;
-    let result = match (&s.key, &s.data) {
-        (Some(_), Some(data)) => vault::change_master_password(&current_password, &new_password, data),
+    let result = match (&s.key, &mut s.data) {
+        (Some(key), Some(data)) => {
+            // Conflict copies are under the old key; fold them in while it still opens them
+            let _ = vault::sync(key, data);
+            vault::change_master_password(&current_password, &new_password, data)
+        }
         _ => Err("Vault is locked".into()),
     };
     current_password.zeroize();
@@ -316,10 +334,11 @@ async fn quick_unlock(_app: tauri::AppHandle) -> Result<(), String> {
 
         // The vault file may have been replaced (a backup import) since the
         // key was wrapped, in which case this key no longer opens it.
-        let data = vault::unlock_with_key(&key).map_err(|_| {
+        let mut data = vault::unlock_with_key(&key).map_err(|_| {
             "The vault has changed since quick unlock was set up. Use your master password."
                 .to_string()
         })?;
+        let _ = vault::sync(&key, &mut data);
 
         let state = _app.try_state::<VaultState>().ok_or("Vault is unavailable")?;
         let mut s = state.lock().unwrap();
@@ -729,6 +748,304 @@ async fn import_csv(
     Ok(Some(CsvImportReport { imported, skipped: parsed.skipped }))
 }
 
+// ── Sync folder ───────────────────────────────────────────────────────────────
+//
+// See vault.rs. Desktop only for now: the vault file moves into a folder a
+// sync client (OneDrive, Dropbox, iCloud Drive, Syncthing) already watches,
+// and a background thread merges in whatever other devices write there.
+// The folder is remembered in sync_folder.conf in the app-data directory.
+
+const SYNC_FOLDER_FILE: &str = "sync_folder.conf";
+
+/// The sync folder the vault lives in, if any, and a folder the user picked
+/// that already holds another device's vault and is waiting for its password.
+#[derive(Default)]
+#[cfg_attr(mobile, allow(dead_code))]
+struct SyncState {
+    folder: Option<PathBuf>,
+    pending_join: Option<PathBuf>,
+}
+
+type SyncFolder = Mutex<SyncState>;
+
+#[cfg_attr(mobile, allow(dead_code))]
+fn save_sync_folder(app: &tauri::AppHandle, folder: Option<&Path>) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let conf = data_dir.join(SYNC_FOLDER_FILE);
+    match folder {
+        Some(folder) => {
+            std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+            std::fs::write(conf, folder.to_string_lossy().as_bytes()).map_err(|e| e.to_string())
+        }
+        None => match std::fs::remove_file(conf) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+            _ => Ok(()),
+        },
+    }
+}
+
+#[cfg_attr(mobile, allow(dead_code))]
+fn load_sync_folder(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let conf = app.path().app_data_dir().ok()?.join(SYNC_FOLDER_FILE);
+    let folder = std::fs::read_to_string(conf).ok()?;
+    let folder = folder.trim();
+    (!folder.is_empty()).then(|| PathBuf::from(folder))
+}
+
+#[derive(serde::Serialize)]
+struct SyncStatus {
+    supported: bool,
+    folder: Option<String>,
+    /// The folder is configured but not there right now
+    missing: bool,
+}
+
+#[tauri::command]
+fn sync_status(sync: State<'_, SyncFolder>) -> SyncStatus {
+    let s = sync.lock().unwrap();
+    SyncStatus {
+        supported: cfg!(desktop),
+        folder: s.folder.as_ref().map(|f| f.display().to_string()),
+        missing: s.folder.as_deref().is_some_and(|f| !f.is_dir()),
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(mobile, allow(dead_code))]
+enum SyncSetup {
+    Cancelled,
+    /// The vault moved into the folder and is now syncing
+    Moved,
+    /// The folder already has a vault; `join_sync_folder` needs its password
+    NeedsPassword,
+}
+
+/// Asks for a folder and moves the vault into it. If another device's vault
+/// is already there, nothing moves yet: the UI asks for that vault's master
+/// password and calls `join_sync_folder`.
+#[cfg(desktop)]
+#[tauri::command]
+async fn choose_sync_folder(
+    app: tauri::AppHandle,
+    state: State<'_, VaultState>,
+    sync: State<'_, SyncFolder>,
+) -> Result<SyncSetup, String> {
+    use tauri_plugin_dialog::DialogExt;
+    if state.lock().unwrap().key.is_none() {
+        return Err("Vault is locked".into());
+    }
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .set_title("Choose a folder your sync app keeps up to date")
+        .blocking_pick_folder()
+    else {
+        return Ok(SyncSetup::Cancelled);
+    };
+    let dir = picked.into_path().map_err(|e| e.to_string())?;
+
+    if dir.join("vault.enc").exists() {
+        sync.lock().unwrap().pending_join = Some(dir);
+        return Ok(SyncSetup::NeedsPassword);
+    }
+
+    // Held so no save lands halfway through the move
+    let _guard = state.lock().unwrap();
+    let previous = sync.lock().unwrap().folder.clone();
+    // Config first: if Vault quit right after the move, it must find the vault
+    save_sync_folder(&app, Some(&dir))?;
+    if let Err(e) = vault::move_vault_to(&dir) {
+        let _ = save_sync_folder(&app, previous.as_deref());
+        return Err(e);
+    }
+    let mut s = sync.lock().unwrap();
+    s.folder = Some(dir);
+    s.pending_join = None;
+    Ok(SyncSetup::Moved)
+}
+
+#[cfg(mobile)]
+#[tauri::command]
+async fn choose_sync_folder() -> Result<SyncSetup, String> {
+    Err("Sync folders are not available on mobile yet".into())
+}
+
+/// Joins the vault another device keeps in the folder picked by
+/// `choose_sync_folder`, merging this device's entries into it. From then on
+/// this device uses that vault and its master password.
+#[cfg(desktop)]
+#[tauri::command]
+async fn join_sync_folder(
+    app: tauri::AppHandle,
+    mut password: String,
+    state: State<'_, VaultState>,
+    sync: State<'_, SyncFolder>,
+) -> Result<(), String> {
+    let (dir, previous) = {
+        let s = sync.lock().unwrap();
+        (s.pending_join.clone(), s.folder.clone())
+    };
+    let Some(dir) = dir else {
+        password.zeroize();
+        return Err("Choose a sync folder first".into());
+    };
+
+    let mut guard = state.lock().unwrap();
+    let s = &mut *guard;
+    let Some(data) = s.data.as_mut() else {
+        password.zeroize();
+        return Err("Vault is locked".into());
+    };
+
+    if let Err(e) = save_sync_folder(&app, Some(&dir)) {
+        password.zeroize();
+        return Err(e);
+    }
+    let result = vault::join_vault_in(&dir, &password, data);
+    password.zeroize();
+    let key = match result {
+        Ok(key) => key,
+        Err(e) => {
+            let _ = save_sync_folder(&app, previous.as_deref());
+            return Err(e);
+        }
+    };
+    // Replacing the old key zeroizes it on drop
+    s.key = Some(key);
+    drop(guard);
+
+    // A wrapped copy of the old key no longer opens anything; the next unlock re-arms it
+    #[cfg(target_os = "windows")]
+    if let Some(armed) = app.try_state::<QuickUnlock>() {
+        *armed.0.lock().unwrap() = None;
+    }
+
+    let mut s = sync.lock().unwrap();
+    s.folder = Some(dir);
+    s.pending_join = None;
+    drop(s);
+    let _ = app.emit("vault-changed", ());
+    Ok(())
+}
+
+#[cfg(mobile)]
+#[tauri::command]
+async fn join_sync_folder(mut password: String) -> Result<(), String> {
+    password.zeroize();
+    Err("Sync folders are not available on mobile yet".into())
+}
+
+/// For a device with no vault yet: points it at the vault another device
+/// keeps in a sync folder. Returns false if the dialog is cancelled.
+#[cfg(desktop)]
+#[tauri::command]
+async fn open_synced_vault(app: tauri::AppHandle, sync: State<'_, SyncFolder>) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+    if vault::vault_exists() {
+        return Err("This device already has a vault. Join the synced one from Settings.".into());
+    }
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .set_title("Choose the folder that holds your synced vault")
+        .blocking_pick_folder()
+    else {
+        return Ok(false);
+    };
+    let dir = picked.into_path().map_err(|e| e.to_string())?;
+
+    let previous = sync.lock().unwrap().folder.clone();
+    save_sync_folder(&app, Some(&dir))?;
+    if let Err(e) = vault::open_vault_in(&dir) {
+        let _ = save_sync_folder(&app, previous.as_deref());
+        return Err(e);
+    }
+    sync.lock().unwrap().folder = Some(dir);
+    Ok(true)
+}
+
+#[cfg(mobile)]
+#[tauri::command]
+async fn open_synced_vault() -> Result<bool, String> {
+    Err("Sync folders are not available on mobile yet".into())
+}
+
+/// Moves the vault back out of the sync folder onto this device only. The
+/// copy in the sync folder stays there for the other devices.
+#[cfg(desktop)]
+#[tauri::command]
+async fn stop_sync(
+    app: tauri::AppHandle,
+    state: State<'_, VaultState>,
+    sync: State<'_, SyncFolder>,
+) -> Result<(), String> {
+    let mut guard = state.lock().unwrap();
+    let s = &mut *guard;
+    // Take the latest from the other devices along
+    let changed = match (&s.key, &mut s.data) {
+        (Some(key), Some(data)) => vault::sync(key, data)?,
+        _ => false,
+    };
+
+    let previous = sync.lock().unwrap().folder.clone();
+    save_sync_folder(&app, None)?;
+    if let Err(e) = vault::default_vault_dir().and_then(|home| vault::move_vault_home(&home)) {
+        let _ = save_sync_folder(&app, previous.as_deref());
+        return Err(e);
+    }
+    drop(guard);
+    sync.lock().unwrap().folder = None;
+    if changed {
+        let _ = app.emit("vault-changed", ());
+    }
+    Ok(())
+}
+
+#[cfg(mobile)]
+#[tauri::command]
+async fn stop_sync() -> Result<(), String> {
+    Err("Sync folders are not available on mobile yet".into())
+}
+
+/// How often an unlocked vault checks its sync folder for other devices' writes.
+#[cfg(desktop)]
+const SYNC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Merges other devices' changes in while the vault is open, and tells the
+/// windows to reload when there were any.
+#[cfg(desktop)]
+fn watch_sync_folder(app: tauri::AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(SYNC_INTERVAL);
+
+        if app.state::<SyncFolder>().lock().unwrap().folder.is_none() {
+            continue;
+        }
+        let outcome = {
+            let state = app.state::<VaultState>();
+            let mut guard = state.lock().unwrap();
+            let s = &mut *guard;
+            match (&s.key, &mut s.data) {
+                (Some(key), Some(data)) => Some(vault::sync(key, data)),
+                _ => None,
+            }
+        };
+        match outcome {
+            Some(Ok(true)) => {
+                let _ = app.emit("vault-changed", ());
+            }
+            // The session key is stale; every save would now fail
+            Some(Err(e)) if e == vault::KEY_CHANGED => {
+                lock_and_notify(&app);
+                let _ = app.emit("vault-sync-error", e);
+            }
+            // Mid-upload, file locked, etc.: try again next tick
+            _ => {}
+        }
+    });
+}
+
 // ── Autostart commands (desktop only; mobile stubs return an error) ──────────
 
 #[tauri::command]
@@ -1078,6 +1395,7 @@ pub fn run() {
             { String::new() }
         })))
         .manage(ClipboardClearGen(Mutex::new((0, None))))
+        .manage(SyncFolder::default())
         .invoke_handler(tauri::generate_handler![
             get_platform,
             vault_exists,
@@ -1113,6 +1431,11 @@ pub fn run() {
             disarm_quick_unlock,
             autofill_status,
             set_autofill_enabled,
+            sync_status,
+            choose_sync_folder,
+            join_sync_folder,
+            open_synced_vault,
+            stop_sync,
         ])
         .setup(|app| {
             // On mobile, store the vault inside the app sandbox
@@ -1128,6 +1451,14 @@ pub fn run() {
                 #[cfg(target_os = "windows")]
                 app.manage(QuickUnlock(Mutex::new(None)));
                 watch_for_system_lock(app.handle().clone());
+
+                // Set even when the folder is missing right now, so Vault
+                // never quietly falls back to a stale local copy
+                if let Some(folder) = load_sync_folder(app.handle()) {
+                    vault::set_vault_dir(folder.clone());
+                    app.state::<SyncFolder>().lock().unwrap().folder = Some(folder);
+                }
+                watch_sync_folder(app.handle().clone());
             }
 
             Ok(())
