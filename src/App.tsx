@@ -103,6 +103,8 @@ export default function App() {
   });
 
   const [shortcut, setShortcut] = useState("Ctrl+Shift+P");
+  // Why the vault was locked, when it wasn't the user's doing
+  const [lockNotice, setLockNotice] = useState("");
 
   useEffect(() => {
     getOverlayShortcut().then(setShortcut).catch(() => {});
@@ -159,9 +161,12 @@ export default function App() {
     const unlistenUnlocked = listen("vault-unlocked", () => setScreen("main"));
     // Locks from the tray, the overlay, or a backup import
     const unlistenLocked = listen("vault-locked", () => setScreen("lock"));
+    // The master password was changed on another device
+    const unlistenSyncError = listen<string>("vault-sync-error", (e) => setLockNotice(e.payload));
     return () => {
       unlistenUnlocked.then((f) => f());
       unlistenLocked.then((f) => f());
+      unlistenSyncError.then((f) => f());
     };
   }, []);
 
@@ -180,7 +185,7 @@ export default function App() {
     return (
       <>
         {!isMobile && <ContextMenu />}
-        <LockScreen onUnlocked={() => setScreen("main")} />
+        <LockScreen notice={lockNotice} onUnlocked={() => { setLockNotice(""); setScreen("main"); }} />
       </>
     );
   }

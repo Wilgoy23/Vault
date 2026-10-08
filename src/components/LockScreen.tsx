@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
-import { ShieldCheck, Lock, Eye, EyeOff, Check, Fingerprint } from "lucide-react";
-import { createVault, unlock, vaultExists, quickUnlockArmed, quickUnlock } from "../api";
+import { ShieldCheck, Lock, Eye, EyeOff, Check, Fingerprint, FolderSync } from "lucide-react";
+import { createVault, unlock, vaultExists, quickUnlockArmed, quickUnlock, syncStatus, openSyncedVault, SyncStatus } from "../api";
 import MasterPasswordMeter from "./MasterPasswordMeter";
 
 interface Props {
+  /** Shown above the form, e.g. why the vault was locked */
+  notice?: string;
   onUnlocked: () => void;
 }
 
-export default function LockScreen({ onUnlocked }: Props) {
+export default function LockScreen({ notice, onUnlocked }: Props) {
   const [isNew, setIsNew] = useState<boolean | null>(null);
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -16,9 +18,11 @@ export default function LockScreen({ onUnlocked }: Props) {
   const [loading, setLoading] = useState(false);
   const [helloArmed, setHelloArmed] = useState(false);
   const [helloBusy, setHelloBusy] = useState(false);
+  const [sync, setSync] = useState<SyncStatus | null>(null);
 
   useEffect(() => {
     vaultExists().then((exists) => setIsNew(!exists));
+    syncStatus().then(setSync).catch(() => {});
     // False off Windows, and whenever this session has not unlocked yet
     quickUnlockArmed().then(setHelloArmed).catch(() => {});
   }, []);
@@ -37,6 +41,19 @@ export default function LockScreen({ onUnlocked }: Props) {
       }
     } finally {
       setHelloBusy(false);
+    }
+  };
+
+  // Second device: use the vault the first one put in a sync folder
+  const handleOpenSynced = async () => {
+    setError("");
+    try {
+      if (await openSyncedVault()) {
+        setIsNew(false);
+        syncStatus().then(setSync).catch(() => {});
+      }
+    } catch (err: any) {
+      setError(err?.toString() ?? "Could not open that folder.");
     }
   };
 
@@ -92,6 +109,18 @@ export default function LockScreen({ onUnlocked }: Props) {
             </p>
           </div>
         </div>
+
+        {notice && (
+          <p style={{ fontSize: "12.5px", color: "var(--danger)", lineHeight: 1.5, margin: "0 0 14px", textAlign: "center" }}>
+            {notice}
+          </p>
+        )}
+        {sync?.missing && (
+          <p style={{ fontSize: "12.5px", color: "var(--danger)", lineHeight: 1.5, margin: "0 0 14px", textAlign: "center", wordBreak: "break-word" }}>
+            Your sync folder isn't available: {sync.folder}. Make sure the drive is connected
+            and your sync app is signed in, then restart Vault.
+          </p>
+        )}
 
         <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
           <div style={{ position: "relative" }}>
@@ -173,6 +202,22 @@ export default function LockScreen({ onUnlocked }: Props) {
           >
             <Fingerprint size={15} strokeWidth={2} />
             {helloBusy ? "Waiting for Windows Hello…" : "Unlock with Windows Hello"}
+          </button>
+        )}
+
+        {isNew && sync?.supported && (
+          <button
+            type="button"
+            className="btn-ghost"
+            onClick={handleOpenSynced}
+            style={{
+              width: "100%", marginTop: "10px", padding: "9px 0",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: "7px",
+              fontSize: "13px",
+            }}
+          >
+            <FolderSync size={15} strokeWidth={2} />
+            Open a vault from a sync folder…
           </button>
         )}
       </div>

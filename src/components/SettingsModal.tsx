@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Palette, Shield, Monitor, Database, X, Keyboard } from "lucide-react";
+import { Palette, Shield, Monitor, Database, X, Keyboard, FolderSync } from "lucide-react";
 import { THEMES, Theme } from "../themes";
-import { exportVault, importVault, importCsv, enableAutostart, disableAutostart, changeMasterPassword, autofillStatus, setAutofillEnabled } from "../api";
+import { exportVault, importVault, importCsv, enableAutostart, disableAutostart, changeMasterPassword, autofillStatus, setAutofillEnabled, syncStatus, chooseSyncFolder, joinSyncFolder, stopSync, SyncStatus } from "../api";
 import MasterPasswordMeter from "./MasterPasswordMeter";
 import ConfirmDialog from "./ConfirmDialog";
 import { useIsMobile } from "../utils/platform";
@@ -245,6 +245,8 @@ export default function SettingsModal({
             <CsvImportRow onImported={onCsvImported} />
           </Section>
 
+          <SyncSection />
+
         </div>
       </div>
 
@@ -259,6 +261,117 @@ export default function SettingsModal({
         />
       )}
     </div>
+  );
+}
+
+/** Desktop only: renders nothing where the backend reports no support. */
+function SyncSection() {
+  const [status, setStatus] = useState<SyncStatus | null>(null);
+  const [joining, setJoining] = useState(false);
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const refresh = () => syncStatus().then(setStatus).catch(() => {});
+  useEffect(() => { refresh(); }, []);
+
+  if (!status?.supported) return null;
+
+  const run = async (action: () => Promise<void>) => {
+    setError("");
+    setBusy(true);
+    try { await action(); }
+    catch (e: any) { setError(e?.toString() ?? "Something went wrong."); }
+    finally { setBusy(false); }
+  };
+
+  const handleChoose = () => run(async () => {
+    const result = await chooseSyncFolder();
+    if (result === "needs_password") setJoining(true);
+    else if (result === "moved") await refresh();
+  });
+
+  // The entry lists reload on the "vault-changed" event the backend sends
+  const handleJoin = (e: React.FormEvent) => {
+    e.preventDefault();
+    run(async () => {
+      await joinSyncFolder(password);
+      setPassword("");
+      setJoining(false);
+      await refresh();
+    });
+  };
+
+  const handleStop = () => run(async () => {
+    await stopSync();
+    await refresh();
+  });
+
+  const hint: React.CSSProperties = { fontSize: "11px", color: "var(--muted-dim)", lineHeight: 1.5, margin: "-4px 0 0" };
+
+  return (
+    <>
+      <Divider />
+      <Section icon={<FolderSync size={13} strokeWidth={2} />} label="Sync">
+        <Row label="Sync folder">
+          {status.folder ? (
+            <button className="btn-ghost" style={{ fontSize: "13px", padding: "6px 14px" }} onClick={handleStop} disabled={busy}>
+              Stop syncing
+            </button>
+          ) : (
+            <button className="btn-ghost" style={{ fontSize: "13px", padding: "6px 14px" }} onClick={handleChoose} disabled={busy || joining}>
+              Choose folder…
+            </button>
+          )}
+        </Row>
+
+        {status.folder && (
+          <p style={{ fontSize: "12px", fontFamily: "var(--mono)", color: "var(--muted)", margin: "-4px 0 10px", wordBreak: "break-all" }}>
+            {status.folder}
+          </p>
+        )}
+
+        {joining && (
+          <form
+            onSubmit={handleJoin}
+            style={{
+              display: "flex", flexDirection: "column", gap: "10px",
+              padding: "14px", marginBottom: "12px",
+              background: "rgba(255,255,255,0.03)",
+              border: "1px solid var(--border-dim)", borderRadius: "var(--r-md)",
+            }}
+          >
+            <p style={{ fontSize: "12.5px", lineHeight: 1.5, margin: 0 }}>
+              This folder already has a vault. Enter its master password to merge this
+              device's entries into it. After that, you unlock with that password here too.
+            </p>
+            <input
+              type="password"
+              placeholder="Master password of the synced vault"
+              value={password}
+              onChange={(e) => { setPassword(e.target.value); setError(""); }}
+              autoFocus
+            />
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button type="submit" className="btn-primary" disabled={busy || !password} style={{ flex: 1, fontSize: "13px", padding: "8px" }}>
+                {busy ? "Merging…" : "Merge and sync"}
+              </button>
+              <button type="button" className="btn-ghost" onClick={() => { setJoining(false); setPassword(""); setError(""); }} style={{ fontSize: "13px", padding: "8px 14px" }}>
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
+
+        {error && <p className="error" style={{ margin: "0 0 12px", fontSize: "12px" }}>{error}</p>}
+
+        <p style={hint}>
+          {status.folder
+            ? "Stopping keeps a copy of the vault on this device. The synced copy stays in the folder for your other devices."
+            : "Keep your vault in a folder that OneDrive, Dropbox, iCloud Drive or Syncthing syncs, then choose the same folder on your other computers. Vault merges changes from each device. Only the encrypted file leaves this one."}
+        </p>
+      </Section>
+    </>
   );
 }
 

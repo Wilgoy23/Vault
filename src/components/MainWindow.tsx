@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { Plus, Lock, Settings, ShieldCheck, ArrowLeft } from "lucide-react";
 import { useIsMobile } from "../utils/platform";
 import { useAutoLock } from "../utils/useAutoLock";
@@ -164,6 +165,20 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
 
   // Don't let a pending delete evaporate when this view goes away
   useEffect(() => () => { commitPendingDelete(); }, []);
+
+  // Another device's changes arrived through the sync folder. A pending
+  // delete is written first so the reload can't bring the item back.
+  useEffect(() => {
+    const unlisten = listen("vault-changed", async () => {
+      await commitPendingDelete();
+      const [fresh, freshFolders] = await Promise.all([listEntries(), listFolders()]);
+      setEntries(fresh);
+      setFolders(freshFolders);
+      setSelected((cur) => (cur ? fresh.find((e) => e.id === cur.id) ?? null : null));
+      setActiveFolder((cur) => (cur && freshFolders.some((f) => f.id === cur) ? cur : null));
+    });
+    return () => { unlisten.then((f) => f()); };
+  }, []);
 
   const handleLock = async () => {
     await commitPendingDelete();

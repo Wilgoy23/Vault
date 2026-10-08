@@ -132,6 +132,35 @@ export interface CsvImportReport {
 export const importCsv = () =>
   withNativeDialog(() => invoke<CsvImportReport | null>("import_csv"));
 
+/** Sync folder (desktop only; `supported` is false on mobile). The vault file
+ *  lives in a folder OneDrive, Dropbox, iCloud Drive or Syncthing keeps in
+ *  step across devices, and the backend merges other devices' changes in.
+ *  It emits "vault-changed" when they arrive. */
+export interface SyncStatus {
+  supported: boolean;
+  folder: string | null;
+  /** Configured, but the folder isn't there right now */
+  missing: boolean;
+}
+
+export const syncStatus = () =>
+  invoke<SyncStatus>("sync_status");
+
+/** "needs_password": the folder already holds another device's vault; pass
+ *  that vault's master password to joinSyncFolder to merge into it. */
+export const chooseSyncFolder = () =>
+  withNativeDialog(() => invoke<"cancelled" | "moved" | "needs_password">("choose_sync_folder"));
+
+export const joinSyncFolder = (password: string) =>
+  invoke<void>("join_sync_folder", { password });
+
+/** For a device with no vault yet. Resolves to false on cancel. */
+export const openSyncedVault = () =>
+  withNativeDialog(() => invoke<boolean>("open_synced_vault"));
+
+export const stopSync = () =>
+  invoke<void>("stop_sync");
+
 export const enableAutostart = () =>
   invoke<void>("enable_autostart");
 

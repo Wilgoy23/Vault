@@ -1,6 +1,8 @@
 export interface Folder {
   id: string;
   name: string;
+  /** Unix seconds; 0 on folders saved before this was tracked. */
+  updated_at?: number;
 }
 
 /** Only logins exist today; the backend carries the field for future item types. */
