@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { ShieldCheck, Lock, Eye, EyeOff, Check, Fingerprint, FolderSync } from "lucide-react";
-import { createVault, unlock, vaultExists, quickUnlockArmed, quickUnlock, syncStatus, openSyncedVault, SyncStatus } from "../api";
+import { ShieldCheck, Lock, Eye, EyeOff, Check, Fingerprint, FolderSync, Upload, FileSpreadsheet, X, ChevronDown } from "lucide-react";
+import { createVault, unlock, vaultExists, quickUnlockArmed, quickUnlock, syncStatus, openSyncedVault, importVault, stageCsvImport, clearStagedCsvImport, applyStagedCsvImport, SyncStatus } from "../api";
 import MasterPasswordMeter from "./MasterPasswordMeter";
 
 interface Props {
@@ -19,6 +19,10 @@ export default function LockScreen({ notice, onUnlocked }: Props) {
   const [helloArmed, setHelloArmed] = useState(false);
   const [helloBusy, setHelloBusy] = useState(false);
   const [sync, setSync] = useState<SyncStatus | null>(null);
+  // Logins in a CSV picked before the vault exists; imported on create
+  const [stagedCsv, setStagedCsv] = useState<number | null>(null);
+  // First-run extras (import, sync folder) stay tucked away until asked for
+  const [showMore, setShowMore] = useState(false);
 
   useEffect(() => {
     vaultExists().then((exists) => setIsNew(!exists));
@@ -57,6 +61,37 @@ export default function LockScreen({ notice, onUnlocked }: Props) {
     }
   };
 
+  // First run: restore an existing .enc backup instead of creating a new
+  // vault. The backup keeps its own master password, so switch to unlock.
+  const handleImportBackup = async () => {
+    setError("");
+    try {
+      if (await importVault()) {
+        if (stagedCsv !== null) { clearStagedCsvImport().catch(() => {}); setStagedCsv(null); }
+        setIsNew(false);
+        setPassword("");
+        setConfirm("");
+      }
+    } catch (err: any) {
+      setError(err?.toString() ?? "Import failed.");
+    }
+  };
+
+  const handleStageCsv = async () => {
+    setError("");
+    try {
+      const count = await stageCsvImport();
+      if (count !== null) setStagedCsv(count);
+    } catch (err: any) {
+      setError(err?.toString() ?? "Could not read that file.");
+    }
+  };
+
+  const handleClearCsv = () => {
+    clearStagedCsvImport().catch(() => {});
+    setStagedCsv(null);
+  };
+
   const confirmMismatch = isNew === true && confirm.length > 0 && confirm !== password;
   const confirmMatches = isNew === true && confirm.length > 0 && confirm === password;
 
@@ -68,6 +103,15 @@ export default function LockScreen({ notice, onUnlocked }: Props) {
     setLoading(true);
     try {
       if (isNew) { await createVault(password); } else { await unlock(password); }
+      if (isNew && stagedCsv !== null) {
+        // The vault exists now either way, so a failed import must not keep
+        // the user on the create screen; they can retry from Settings.
+        try {
+          await applyStagedCsvImport();
+        } catch (err: any) {
+          window.alert(`Your vault was created, but the CSV import failed: ${err?.toString() ?? "unknown error"}\n\nYou can try again from Settings → Import CSV.`);
+        }
+      }
       onUnlocked();
     } catch (err: any) {
       setError(err?.toString() ?? "Something went wrong.");
@@ -79,8 +123,11 @@ export default function LockScreen({ notice, onUnlocked }: Props) {
   if (isNew === null) return null;
 
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
+    // margin:auto on the card centres it but, unlike align-items:center,
+    // still lets it scroll from the top when it is taller than the screen
+    <div style={{ display: "flex", height: "100%", overflowY: "auto", padding: "12px 0" }}>
       <div className="glass" style={{
+        margin: "auto", flexShrink: 0,
         borderRadius: "var(--radius-lg)", padding: "40px", width: "min(360px, calc(100vw - 24px))",
         boxShadow: "0 8px 48px rgba(0,0,0,0.5), 0 0 80px rgba(30,80,200,0.12)",
       }}>
@@ -205,22 +252,97 @@ export default function LockScreen({ notice, onUnlocked }: Props) {
           </button>
         )}
 
-        {isNew && sync?.supported && (
-          <button
-            type="button"
-            className="btn-ghost"
-            onClick={handleOpenSynced}
-            style={{
-              width: "100%", marginTop: "10px", padding: "9px 0",
-              display: "flex", alignItems: "center", justifyContent: "center", gap: "7px",
-              fontSize: "13px",
-            }}
-          >
-            <FolderSync size={15} strokeWidth={2} />
-            Open a vault from a sync folder…
-          </button>
+        {isNew && stagedCsv !== null && (
+          <div style={{
+            marginTop: "10px", padding: "8px 10px",
+            display: "flex", alignItems: "center", gap: "8px",
+            fontSize: "12.5px", color: "var(--fg-mid)",
+            border: "1px solid rgba(77,157,224,0.25)", borderRadius: "var(--r-md)",
+            background: "rgba(77,157,224,0.07)",
+          }}>
+            <FileSpreadsheet size={15} strokeWidth={2} color="var(--accent)" style={{ flexShrink: 0 }} />
+            <span style={{ flex: 1 }}>
+              {stagedCsv} login{stagedCsv === 1 ? "" : "s"} will be imported when you create your vault.
+            </span>
+            <button
+              type="button"
+              className="btn-icon"
+              onClick={handleClearCsv}
+              title="Don't import"
+              aria-label="Don't import the CSV"
+              style={{ padding: "3px", flexShrink: 0 }}
+            >
+              <X size={13} strokeWidth={2} />
+            </button>
+          </div>
+        )}
+
+        {isNew && (
+          <>
+            <button
+              type="button"
+              className="btn-icon"
+              onClick={() => setShowMore((s) => !s)}
+              aria-expanded={showMore}
+              style={{
+                width: "100%", marginTop: "14px", padding: "4px 0",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: "5px",
+                fontSize: "12.5px", color: "var(--muted)",
+              }}
+            >
+              More options
+              <ChevronDown
+                size={14} strokeWidth={2}
+                style={{ transform: showMore ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}
+              />
+            </button>
+
+            {showMore && (
+              <>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={handleImportBackup}
+                  style={optionStyle}
+                >
+                  <Upload size={15} strokeWidth={2} />
+                  Import a vault backup…
+                </button>
+
+                {stagedCsv === null && (
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    onClick={handleStageCsv}
+                    style={optionStyle}
+                  >
+                    <FileSpreadsheet size={15} strokeWidth={2} />
+                    Import passwords from CSV…
+                  </button>
+                )}
+
+                {sync?.supported && (
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    onClick={handleOpenSynced}
+                    style={optionStyle}
+                  >
+                    <FolderSync size={15} strokeWidth={2} />
+                    Open a vault from a sync folder…
+                  </button>
+                )}
+              </>
+            )}
+          </>
         )}
       </div>
     </div>
   );
 }
+
+const optionStyle: React.CSSProperties = {
+  width: "100%", marginTop: "8px", padding: "9px 0",
+  display: "flex", alignItems: "center", justifyContent: "center", gap: "7px",
+  fontSize: "13px",
+};

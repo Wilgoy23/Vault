@@ -132,6 +132,19 @@ export interface CsvImportReport {
 export const importCsv = () =>
   withNativeDialog(() => invoke<CsvImportReport | null>("import_csv"));
 
+// First run: pick a CSV before the vault exists. Resolves to the number of
+// logins in it, or null on cancel. Applied by applyStagedCsvImport() once
+// the vault has been created.
+export const stageCsvImport = () =>
+  withNativeDialog(() => invoke<number | null>("stage_csv_import"));
+
+export const clearStagedCsvImport = () =>
+  invoke<void>("clear_staged_csv_import");
+
+// Resolves to null when nothing was staged.
+export const applyStagedCsvImport = () =>
+  invoke<CsvImportReport | null>("apply_staged_csv_import");
+
 /** Sync folder (desktop only; `supported` is false on mobile). The vault file
  *  lives in a folder OneDrive, Dropbox, iCloud Drive or Syncthing keeps in
  *  step across devices, and the backend merges other devices' changes in.
@@ -181,3 +194,7 @@ export const getOverlayShortcut = () =>
 
 export const setOverlayShortcut = (shortcutStr: string) =>
   invoke<void>("set_overlay_shortcut", { shortcutStr });
+
+// Hides the quick-access overlay and focuses the main window.
+export const openMainWindow = () =>
+  invoke<void>("open_main_window");
