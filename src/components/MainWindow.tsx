@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Plus, Lock, Settings, ShieldCheck, ArrowLeft } from "lucide-react";
+import { Plus, Lock, Settings, ShieldCheck, ArrowLeft, ChevronLeft, KeyRound } from "lucide-react";
 import { useIsMobile } from "../utils/platform";
 import { useAutoLock } from "../utils/useAutoLock";
 import { useBackLayer } from "../utils/useBackLayer";
@@ -274,6 +274,126 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
     );
   };
 
+  const overlays = (
+    <>
+        {showAdd && (
+          <AddEntryModal
+            folders={folders}
+            entries={entries}
+            defaultFolderId={activeFolder ?? undefined}
+            onAdded={handleAdded}
+            onClose={() => setShowAdd(false)}
+          />
+        )}
+
+        {undoToast && (
+          <UndoToast message={undoToast.message} deadline={undoToast.deadline} onUndo={undoDelete} />
+        )}
+
+        {showSettings && (
+          <SettingsModal
+            themeId={themeId}
+            onThemeChange={onThemeChange}
+            timeoutMs={timeoutMs}
+            onTimeoutChange={onTimeoutChange}
+            autostart={autostart}
+            onAutostartChange={setAutostart}
+            lockOnSystem={lockOnSystem}
+            onLockOnSystemChange={handleLockOnSystemChange}
+            helloAvailable={helloAvailable}
+            helloEnabled={helloEnabled}
+            onHelloChange={handleHelloChange}
+            shortcut={shortcut}
+            onShortcutChange={onShortcutChange}
+            onImported={() => { setShowSettings(false); onLocked(); }}
+            onCsvImported={() => { listEntries().then(setEntries); listFolders().then(setFolders); }}
+            onClose={() => setShowSettings(false)}
+          />
+        )}
+    </>
+  );
+
+  // ── Phone layout ────────────────────────────────────────────────────────
+  // Native-style navigation: a large title on the root screens, a back bar on
+  // the entry screen, and a bottom tab bar instead of a crowded titlebar.
+  if (isMobile) {
+    const tab = showSettings ? "settings" : showSecurity ? "health" : "passwords";
+    const goPasswords = () => {
+      setShowSettings(false);
+      setShowSecurity(false);
+      // Tapping the active tab again pops back to the list, as on iOS
+      if (tab === "passwords") setSelected(null);
+    };
+    const goHealth = () => { setShowSettings(false); setShowSecurity(true); };
+
+    return (
+      <div className="m-shell">
+        <header className="m-nav">
+          {selected && !showSecurity ? (
+            <button className="m-nav-back" onClick={() => setSelected(null)}>
+              <ChevronLeft size={26} strokeWidth={2.25} />
+              Passwords
+            </button>
+          ) : (
+            <>
+              <h1 className="m-large-title">{showSecurity ? "Health" : "Passwords"}</h1>
+              <button className="m-nav-btn" onClick={handleLock} aria-label="Lock vault">
+                <Lock size={20} strokeWidth={2} />
+              </button>
+              {!showSecurity && (
+                <button className="m-nav-btn" onClick={() => setShowAdd(true)} aria-label="Add entry">
+                  <Plus size={24} strokeWidth={2.25} />
+                </button>
+              )}
+            </>
+          )}
+        </header>
+
+        <main className="m-body">
+          {showSecurity ? (
+            <SecurityView entries={entries} onSelect={handleAuditSelect} />
+          ) : selected ? (
+            <EntryDetail entry={selected} folders={folders} onUpdated={handleUpdated} onDeleted={handleDeleted} editTrigger={editTrigger} />
+          ) : (
+            <EntryList
+              entries={entries}
+              folders={folders}
+              activeFolder={activeFolder}
+              onFolderChange={setActiveFolder}
+              onFolderAdded={handleFolderAdded}
+              onFolderRenamed={handleFolderRenamed}
+              onFolderDeleted={handleFolderDeleted}
+              selectedId={null}
+              onSelect={setSelected}
+              search={search}
+              onSearchChange={setSearch}
+              searchInputRef={searchInputRef}
+              fullWidth
+              onAdd={() => setShowAdd(true)}
+            />
+          )}
+        </main>
+
+        <nav className="m-tabbar">
+          <button className={`m-tab${tab === "passwords" ? " active" : ""}`} onClick={goPasswords}>
+            <KeyRound size={22} strokeWidth={tab === "passwords" ? 2.25 : 1.75} />
+            Passwords
+          </button>
+          <button className={`m-tab${tab === "health" ? " active" : ""}`} onClick={goHealth}>
+            <ShieldCheck size={22} strokeWidth={tab === "health" ? 2.25 : 1.75} />
+            Health
+          </button>
+          <button className={`m-tab${tab === "settings" ? " active" : ""}`} onClick={() => setShowSettings(true)}>
+            <Settings size={22} strokeWidth={tab === "settings" ? 2.25 : 1.75} />
+            Settings
+          </button>
+        </nav>
+
+        {overlays}
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {/* Titlebar */}
@@ -375,40 +495,7 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
       </div>
       )}
 
-      {showAdd && (
-        <AddEntryModal
-          folders={folders}
-          entries={entries}
-          defaultFolderId={activeFolder ?? undefined}
-          onAdded={handleAdded}
-          onClose={() => setShowAdd(false)}
-        />
-      )}
-
-      {undoToast && (
-        <UndoToast message={undoToast.message} deadline={undoToast.deadline} onUndo={undoDelete} />
-      )}
-
-      {showSettings && (
-        <SettingsModal
-          themeId={themeId}
-          onThemeChange={onThemeChange}
-          timeoutMs={timeoutMs}
-          onTimeoutChange={onTimeoutChange}
-          autostart={autostart}
-          onAutostartChange={setAutostart}
-          lockOnSystem={lockOnSystem}
-          onLockOnSystemChange={handleLockOnSystemChange}
-          helloAvailable={helloAvailable}
-          helloEnabled={helloEnabled}
-          onHelloChange={handleHelloChange}
-          shortcut={shortcut}
-          onShortcutChange={onShortcutChange}
-          onImported={() => { setShowSettings(false); onLocked(); }}
-          onCsvImported={() => { listEntries().then(setEntries); listFolders().then(setFolders); }}
-          onClose={() => setShowSettings(false)}
-        />
-      )}
+      {overlays}
     </div>
   );
 }

@@ -140,6 +140,27 @@ export default function App() {
     setShortcut(s);
   };
 
+  // Lets CSS target the phone layout by platform rather than window width
+  useEffect(() => {
+    document.documentElement.classList.toggle("is-mobile", isMobile);
+  }, [isMobile]);
+
+  // iOS pans the page up to keep a focused input above the keyboard and
+  // doesn't always pan it back when the keyboard closes, leaving the app
+  // shifted with a gap at the bottom. Snap back once focus leaves inputs.
+  useEffect(() => {
+    if (!isMobile) return;
+    const onFocusOut = () => {
+      setTimeout(() => {
+        const el = document.activeElement;
+        if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return;
+        window.scrollTo(0, 0);
+      }, 50);
+    };
+    document.addEventListener("focusout", onFocusOut);
+    return () => document.removeEventListener("focusout", onFocusOut);
+  }, [isMobile]);
+
   // Mobile: lock as soon as the app leaves the foreground. The webview's
   // visibility is the only lifecycle signal the frontend gets on Android and
   // iOS, and it flips when the OS backgrounds the app — including when the

@@ -1,5 +1,5 @@
 import { useRef, useState, RefObject } from "react";
-import { Folder, FolderOpen, Plus } from "lucide-react";
+import { Folder, FolderOpen, Plus, ChevronRight, Trash2, KeyRound } from "lucide-react";
 import { Entry, Folder as FolderType } from "../types";
 
 const AV_CLASSES = [
@@ -27,12 +27,14 @@ interface Props {
   searchInputRef?: RefObject<HTMLInputElement | null>;
   /** Mobile: the list is the whole screen instead of a 240px sidebar. */
   fullWidth?: boolean;
+  /** Mobile: the empty state offers to add the first entry. */
+  onAdd?: () => void;
 }
 
 export default function EntryList({
   entries, folders, activeFolder, onFolderChange,
   onFolderAdded, onFolderRenamed, onFolderDeleted,
-  selectedId, onSelect, search, onSearchChange, searchInputRef, fullWidth,
+  selectedId, onSelect, search, onSearchChange, searchInputRef, fullWidth, onAdd,
 }: Props) {
   const [newFolderMode, setNewFolderMode] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
@@ -86,6 +88,18 @@ export default function EntryList({
     e.stopPropagation();
     onFolderDeleted(folder.id);
   };
+
+  if (fullWidth) {
+    return (
+      <MobileList
+        entries={entries} filtered={filtered} folders={folders}
+        activeFolder={activeFolder} onFolderChange={onFolderChange}
+        onFolderAdded={onFolderAdded} onFolderRenamed={onFolderRenamed} onFolderDeleted={onFolderDeleted}
+        onSelect={onSelect} search={search} onSearchChange={onSearchChange}
+        searchInputRef={searchInputRef} onAdd={onAdd}
+      />
+    );
+  }
 
   return (
     <div style={{
@@ -303,5 +317,178 @@ function TabBtn({ label, active, onClick }: { label: string; active: boolean; on
     >
       {label}
     </button>
+  );
+}
+
+// ── Phone list ────────────────────────────────────────────────────────────────
+// Touch-sized rows, folder chips that scroll sideways, and a long-press on a
+// chip to rename or delete it (there is no hover or double-click on a phone).
+
+const LONG_PRESS_MS = 500;
+
+function MobileList({
+  entries, filtered, folders, activeFolder, onFolderChange,
+  onFolderAdded, onFolderRenamed, onFolderDeleted,
+  onSelect, search, onSearchChange, searchInputRef, onAdd,
+}: {
+  entries: Entry[];
+  filtered: Entry[];
+  folders: FolderType[];
+  activeFolder: string | null;
+  onFolderChange: (id: string | null) => void;
+  onFolderAdded: (name: string) => Promise<FolderType>;
+  onFolderRenamed: (id: string, name: string) => Promise<void>;
+  onFolderDeleted: (id: string) => void;
+  onSelect: (entry: Entry) => void;
+  search: string;
+  onSearchChange: (v: string) => void;
+  searchInputRef?: RefObject<HTMLInputElement | null>;
+  onAdd?: () => void;
+}) {
+  const [editing, setEditing] = useState<string | null>(null); // folder id, or "new"
+  const [name, setName] = useState("");
+  const pressTimer = useRef<number | null>(null);
+  const longPressed = useRef(false);
+
+  const startEdit = (id: string, initial: string) => {
+    setEditing(id);
+    setName(initial);
+  };
+
+  const commit = async () => {
+    const value = name.trim();
+    const target = editing;
+    setEditing(null);
+    if (!value || !target) return;
+    if (target === "new") {
+      const folder = await onFolderAdded(value);
+      onFolderChange(folder.id);
+    } else {
+      const current = folders.find((f) => f.id === target);
+      if (current && current.name !== value) await onFolderRenamed(target, value);
+    }
+  };
+
+  const pressStart = (folder: FolderType) => {
+    longPressed.current = false;
+    pressTimer.current = window.setTimeout(() => {
+      longPressed.current = true;
+      startEdit(folder.id, folder.name);
+    }, LONG_PRESS_MS);
+  };
+  const pressEnd = () => {
+    if (pressTimer.current !== null) clearTimeout(pressTimer.current);
+    pressTimer.current = null;
+  };
+
+  const editingFolder = editing && editing !== "new" ? folders.find((f) => f.id === editing) : null;
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      {/* Search */}
+      <div style={{ padding: "2px 16px 10px", flexShrink: 0 }}>
+        <div className="search-box m-search">
+          <svg className="search-icon" width="16" height="16" viewBox="0 0 13 13" fill="none">
+            <circle cx="5.5" cy="5.5" r="3.75" stroke="currentColor" strokeWidth="1.3"/>
+            <path d="M8.75 8.75L11.25 11.25" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+          </svg>
+          <input
+            ref={searchInputRef}
+            type="search"
+            enterKeyHint="search"
+            placeholder="Search"
+            value={search}
+            onChange={(e) => onSearchChange(e.target.value)}
+          />
+        </div>
+      </div>
+
+      {/* Folder chips, or the rename/new-folder editor in their place */}
+      {editing ? (
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "0 16px 12px", flexShrink: 0 }}>
+          <input
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") commit(); }}
+            enterKeyHint="done"
+            placeholder="Folder name"
+            style={{ flex: 1, height: "40px" }}
+          />
+          {editingFolder && (
+            <button
+              className="m-chip-action danger"
+              onClick={() => { setEditing(null); onFolderDeleted(editingFolder.id); }}
+              aria-label={`Delete folder ${editingFolder.name}`}
+            >
+              <Trash2 size={18} strokeWidth={2} />
+            </button>
+          )}
+          <button className="btn-primary" onClick={commit} style={{ height: "40px", padding: "0 16px" }}>
+            Done
+          </button>
+        </div>
+      ) : (
+        <div className="m-chips">
+          <button className={`m-chip${activeFolder === null ? " active" : ""}`} onClick={() => onFolderChange(null)}>
+            All
+          </button>
+          {folders.map((folder) => (
+            <button
+              key={folder.id}
+              className={`m-chip${activeFolder === folder.id ? " active" : ""}`}
+              onPointerDown={() => pressStart(folder)}
+              onPointerUp={pressEnd}
+              onPointerLeave={pressEnd}
+              onPointerCancel={pressEnd}
+              onContextMenu={(e) => e.preventDefault()}
+              onClick={() => { if (!longPressed.current) onFolderChange(folder.id); }}
+            >
+              {folder.name}
+            </button>
+          ))}
+          <button className="m-chip m-chip-add" onClick={() => startEdit("new", "")} aria-label="New folder">
+            <Plus size={16} strokeWidth={2.25} />
+          </button>
+        </div>
+      )}
+
+      {/* Entries */}
+      <div className="m-list">
+        {entries.length === 0 ? (
+          <div className="m-empty">
+            <div className="m-empty-icon"><KeyRound size={28} strokeWidth={1.75} /></div>
+            <div style={{ fontSize: "17px", fontWeight: 600, color: "var(--text)" }}>No passwords yet</div>
+            <div style={{ fontSize: "14px", color: "var(--muted)" }}>Add your first login to get started.</div>
+            {onAdd && (
+              <button className="btn-primary" onClick={onAdd} style={{ marginTop: "8px", height: "44px", padding: "0 22px" }}>
+                Add password
+              </button>
+            )}
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="m-empty">
+            <div style={{ fontSize: "15px", color: "var(--muted)" }}>
+              {search ? `No results for “${search}”` : "This folder is empty."}
+            </div>
+          </div>
+        ) : (
+          filtered.map((entry) => (
+            <button key={entry.id} className="m-row" onClick={() => onSelect(entry)}>
+              <div className={`avatar m-avatar ${avatarClass(entry.name)}`}>
+                {entry.name.charAt(0).toUpperCase()}
+              </div>
+              <div className="m-row-text">
+                <div className="m-row-title">{entry.name}</div>
+                {(entry.email || entry.username) && (
+                  <div className="m-row-sub">{entry.email || entry.username}</div>
+                )}
+              </div>
+              <ChevronRight size={18} strokeWidth={2} className="m-row-chevron" />
+            </button>
+          ))
+        )}
+      </div>
+    </div>
   );
 }

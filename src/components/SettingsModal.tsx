@@ -113,6 +113,7 @@ export default function SettingsModal({
 
   return (
     <div
+      className="sheet-backdrop"
       style={{
         position: "fixed", inset: 0, background: "rgba(3,8,20,0.70)",
         padding: "env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)",
@@ -121,7 +122,7 @@ export default function SettingsModal({
       }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="glass" style={{
+      <div className="glass sheet" style={{
         borderRadius: "var(--radius-lg)", width: "min(480px, calc(100vw - 24px))", maxHeight: "min(80vh, 100%)",
         overflow: "hidden", display: "flex", flexDirection: "column",
         boxShadow: "0 8px 48px rgba(0,0,0,0.6), 0 0 80px rgba(30,80,200,0.08)",

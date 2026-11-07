@@ -38,6 +38,9 @@
 
 html, body, #root { height: 100%; }
 
+/* Default theme's base colour until applyTheme() sets the current one */
+html { background: #050D1A; }
+
 body {
   color: var(--text);
   font-family: var(--font);
@@ -391,6 +394,12 @@ body {
 }
 
 @media (max-width: 640px), (pointer: coarse) {
+  /* Pin the page to the screen. Each view scrolls inside itself, so the
+     document never needs to, and iOS can't leave it shifted after the
+     keyboard closes. */
+  html, body { overflow: hidden; }
+  body { position: fixed; inset: 0; }
+
   /* Respect the notch / home indicator */
   body {
     padding-top: env(safe-area-inset-top);
@@ -415,3 +424,193 @@ body {
   /* Fatter scrollbars are pointless on touch — hide them */
   ::-webkit-scrollbar { width: 0; height: 0; }
 }
+
+/* ── Phone app (iOS/Android) ──────────────────────────────────────────────────
+   Scoped to html.is-mobile (set from the platform in App.tsx), so a narrow
+   desktop window keeps the desktop layout. */
+
+html.is-mobile {
+  /* App chrome isn't text to select; long-press shouldn't open the callout */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  font-size: 16px;
+}
+html.is-mobile input,
+html.is-mobile textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* The tab bar sits on the home indicator itself and pads its own content */
+html.is-mobile body { padding-bottom: 0; }
+
+/* Hover states stick after a tap on touch screens; drop them */
+html.is-mobile .btn-icon:hover,
+html.is-mobile .btn-ghost:hover,
+html.is-mobile .field-row:hover { background: transparent; }
+html.is-mobile .btn-action:hover { background: rgba(255,255,255,0.05); color: var(--muted-dim); }
+html.is-mobile .btn-primary:hover { background: var(--accent); }
+
+/* Shell */
+.m-shell { display: flex; flex-direction: column; height: 100%; }
+
+.m-nav {
+  display: flex; align-items: center; gap: 2px;
+  min-height: 56px; padding: 6px 8px 4px 16px;
+  flex-shrink: 0;
+}
+.m-large-title {
+  flex: 1; min-width: 0;
+  font-size: 30px; font-weight: 700; letter-spacing: -0.03em;
+  color: var(--text); line-height: 1.1;
+}
+.m-nav-btn {
+  width: 44px; height: 44px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; color: var(--accent);
+  border-radius: 22px;
+}
+.m-nav-btn:active { background: var(--accent-tint); opacity: 1; }
+.m-nav-back {
+  display: flex; align-items: center;
+  min-height: 44px; padding: 0 8px 0 0; margin-left: -10px;
+  background: transparent; color: var(--accent);
+  font-size: 17px; font-weight: 400;
+}
+
+.m-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+
+.m-tabbar {
+  display: flex; flex-shrink: 0;
+  border-top: 1px solid var(--border-dim);
+  background: rgba(0,0,0,0.35);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.m-tab {
+  flex: 1; min-height: 54px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  padding: 6px 0 4px; border-radius: 0;
+  background: transparent; color: var(--muted);
+  font-size: 11px; font-weight: 500; letter-spacing: 0.01em;
+}
+.m-tab.active { color: var(--accent); }
+.m-tab:active { opacity: 0.6; }
+
+/* Search */
+html.is-mobile .m-search {
+  height: 40px; padding: 0 12px; gap: 8px;
+  border-radius: 12px; background: rgba(255,255,255,0.07); border-color: transparent;
+}
+html.is-mobile .m-search input { font-size: 17px; }
+/* Hide WebKit's own clear button and decoration on type=search */
+.m-search input::-webkit-search-decoration,
+.m-search input::-webkit-search-cancel-button { -webkit-appearance: none; }
+
+/* Folder chips */
+.m-chips {
+  display: flex; gap: 8px;
+  padding: 0 16px 12px;
+  overflow-x: auto; flex-shrink: 0;
+  scrollbar-width: none;
+}
+.m-chips::-webkit-scrollbar { display: none; }
+.m-chip {
+  flex-shrink: 0; min-height: 34px; height: 34px; padding: 0 14px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 17px;
+  background: rgba(255,255,255,0.06); border: 1px solid var(--border-dim);
+  color: var(--fg-mid); font-size: 14px; font-weight: 500; white-space: nowrap;
+  -webkit-user-select: none; user-select: none;
+}
+.m-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.m-chip-add { width: 34px; padding: 0; color: var(--muted); }
+.m-chip-action {
+  width: 40px; height: 40px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255,255,255,0.06); color: var(--muted); border-radius: 10px;
+}
+.m-chip-action.danger { color: var(--danger); background: var(--danger-glow); }
+
+/* Entry rows */
+.m-list { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: 12px; }
+.m-row {
+  width: 100%; display: flex; align-items: center; gap: 14px;
+  min-height: 64px; padding: 0 12px 0 16px;
+  background: transparent; border-radius: 0; text-align: left;
+  font-weight: 400; color: inherit; position: relative;
+}
+.m-row:active { background: rgba(255,255,255,0.06); opacity: 1; }
+/* Inset separator, starting under the text like iOS lists */
+.m-row + .m-row::before {
+  content: ""; position: absolute; top: 0; right: 0; left: 70px;
+  height: 1px; background: var(--border-dim);
+}
+.m-avatar { width: 40px; height: 40px; border-radius: 10px; font-size: 16px; }
+.m-row-text { flex: 1; min-width: 0; }
+.m-row-title {
+  font-size: 16.5px; font-weight: 500; color: var(--text); line-height: 1.25;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.m-row-sub {
+  font-size: 14px; color: var(--muted); line-height: 1.3; margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.m-row-chevron { color: var(--muted-dim); flex-shrink: 0; }
+
+.m-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; padding: 64px 32px; text-align: center;
+}
+.m-empty-icon {
+  width: 60px; height: 60px; border-radius: 16px; margin-bottom: 10px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-tint); color: var(--accent);
+}
+
+/* Entry detail: labels above values, full-width rows, finger-sized buttons */
+html.is-mobile .field-card { border-radius: 14px; }
+html.is-mobile .field-row,
+html.is-mobile .field-row.editing {
+  flex-direction: column; align-items: stretch; flex-wrap: nowrap;
+  height: auto; min-height: 0; padding: 10px 16px; gap: 4px;
+}
+html.is-mobile .field-label-col { width: auto; font-size: 11.5px; }
+html.is-mobile .field-divider-v { display: none; }
+html.is-mobile .field-body { min-height: 40px; }
+html.is-mobile .field-val { font-size: 16.5px; }
+html.is-mobile .field-val.mono { font-size: 16px; }
+html.is-mobile .btn-action { width: 40px; height: 40px; border-radius: 10px; }
+html.is-mobile .btn-action svg { width: 18px; height: 18px; }
+html.is-mobile .tap-copy:active { background: rgba(255,255,255,0.04); }
+html.is-mobile .tap-copy { margin: -4px -8px; padding: 4px 8px; border-radius: 8px; }
+
+/* Add / Settings become full-screen sheets that slide up */
+html.is-mobile .sheet-backdrop {
+  padding: 0 !important;
+  align-items: stretch !important;
+  background: transparent !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+html.is-mobile .sheet {
+  width: 100% !important;
+  max-height: none !important;
+  border-radius: 0 !important;
+  border: none !important;
+  box-shadow: none !important;
+  background: var(--bg) !important;
+  padding-top: env(safe-area-inset-top) !important;
+  padding-bottom: env(safe-area-inset-bottom) !important;
+  animation: m-sheet-in 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+html.is-mobile .sheet .btn-icon { width: 44px !important; height: 44px !important; }
+@keyframes m-sheet-in {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+
+/* Keep the Undo toast clear of the tab bar */
+html.is-mobile .undo-toast { bottom: calc(70px + env(safe-area-inset-bottom)) !important; }
