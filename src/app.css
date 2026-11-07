@@ -249,6 +249,9 @@ button:active { opacity: 0.82; }
 
 /* ── Field card (detail panel) ────────────────────────────────────────────── */
 .field-card {
+  /* It sits in a scrolling flex column; overflow:hidden would otherwise let
+     it shrink to the screen and clip its last rows instead of scrolling */
+  flex-shrink: 0;
   background: rgba(255,255,255,0.038);
   border: 1px solid var(--border-dim);
   border-radius: var(--r-lg);
