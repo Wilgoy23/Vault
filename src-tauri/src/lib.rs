@@ -735,17 +735,74 @@ async fn import_csv(
         return Ok(None);
     };
     let path = picked.into_path().map_err(|e| e.to_string())?;
-    let raw = Zeroizing::new(
-        std::fs::read_to_string(&path).map_err(|_| "Cannot read the selected file".to_string())?,
-    );
-    let parsed = csv_import::parse(&raw)?;
+    import_csv_from_path(&path, &state).map(Some)
+}
 
+/// Reads and parses a CSV export; the raw content is zeroized on drop.
+fn read_csv_file(path: &Path) -> Result<csv_import::CsvParseResult, String> {
+    let raw = Zeroizing::new(
+        std::fs::read_to_string(path).map_err(|_| "Cannot read the selected file".to_string())?,
+    );
+    csv_import::parse(&raw)
+}
+
+fn import_csv_from_path(path: &Path, state: &VaultState) -> Result<CsvImportReport, String> {
+    let parsed = read_csv_file(path)?;
     let mut guard = state.lock().unwrap();
     let s = &mut *guard;
     let key = s.key.as_deref().ok_or("Vault is locked")?;
     let data = s.data.as_mut().ok_or("Vault is locked")?;
     let imported = vault::import_csv_logins(&key, data, parsed.logins)?;
-    Ok(Some(CsvImportReport { imported, skipped: parsed.skipped }))
+    Ok(CsvImportReport { imported, skipped: parsed.skipped })
+}
+
+/// A CSV picked on the first-run screen, before a vault (and so a key)
+/// exists. Only the path is held; the file is re-read once the vault is
+/// created, so no plaintext logins sit in memory while the user types.
+#[derive(Default)]
+struct PendingCsvImport(Mutex<Option<PathBuf>>);
+
+/// Picks and validates a CSV to import after the vault is created. Returns
+/// how many logins it holds, or None when the user cancels.
+#[tauri::command]
+async fn stage_csv_import(
+    app: tauri::AppHandle,
+    pending: State<'_, PendingCsvImport>,
+) -> Result<Option<usize>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .add_filter("CSV Export", &["csv"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    let count = read_csv_file(&path)?.logins.len();
+    if count == 0 {
+        return Err("No logins found in that file".into());
+    }
+    *pending.0.lock().unwrap() = Some(path);
+    Ok(Some(count))
+}
+
+#[tauri::command]
+fn clear_staged_csv_import(pending: State<'_, PendingCsvImport>) {
+    *pending.0.lock().unwrap() = None;
+}
+
+/// Imports the staged CSV into the (now unlocked) vault. None if nothing
+/// was staged.
+#[tauri::command]
+async fn apply_staged_csv_import(
+    state: State<'_, VaultState>,
+    pending: State<'_, PendingCsvImport>,
+) -> Result<Option<CsvImportReport>, String> {
+    let Some(path) = pending.0.lock().unwrap().take() else {
+        return Ok(None);
+    };
+    import_csv_from_path(&path, &state).map(Some)
 }
 
 // ── Sync folder ───────────────────────────────────────────────────────────────
@@ -1242,6 +1299,24 @@ fn set_overlay_shortcut(
     }
 }
 
+/// Hides the quick-access overlay and brings the main window to the front.
+#[tauri::command]
+fn open_main_window(app: tauri::AppHandle) {
+    #[cfg(desktop)]
+    {
+        if let Some(overlay) = app.get_webview_window("overlay") {
+            let _ = overlay.hide();
+        }
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.unminimize();
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+    }
+    #[cfg(mobile)]
+    let _ = app;
+}
+
 /// Registers `shortcut` to toggle the quick-access overlay on key press only
 /// (not release — that would fire the toggle twice on Windows).
 #[cfg(desktop)]
@@ -1396,6 +1471,7 @@ pub fn run() {
         })))
         .manage(ClipboardClearGen(Mutex::new((0, None))))
         .manage(SyncFolder::default())
+        .manage(PendingCsvImport::default())
         .invoke_handler(tauri::generate_handler![
             get_platform,
             vault_exists,
@@ -1416,11 +1492,15 @@ pub fn run() {
             export_vault,
             import_vault,
             import_csv,
+            stage_csv_import,
+            clear_staged_csv_import,
+            apply_staged_csv_import,
             enable_autostart,
             disable_autostart,
             is_autostart_enabled,
             get_overlay_shortcut,
             set_overlay_shortcut,
+            open_main_window,
             write_clipboard_text,
             schedule_clipboard_clear,
             set_lock_on_system_events,

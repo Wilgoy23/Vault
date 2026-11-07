@@ -5,6 +5,7 @@ import { updateEntry, writeClipboardText, scheduleClipboardClear, markEntryUsed 
 import { generateTOTP, totpSecondsLeft } from "../utils/totp";
 import { passwordStrength, STRENGTH_LABELS } from "../utils/password";
 import PasswordInput from "./PasswordInput";
+import { useIsMobile } from "../utils/platform";
 import TotpSecretInput from "./TotpSecretInput";
 
 interface Props {
@@ -67,7 +68,7 @@ function CopyBtn({ id, value, copied, onCopy }: {
   return (
     <button
       className={`btn-action ${done ? "copied" : ""}`}
-      onClick={() => onCopy(id, value)}
+      onClick={(e) => { e.stopPropagation(); onCopy(id, value); }}
       title={done ? "Copied!" : "Copy"}
     >
       {done ? <Check size={11} strokeWidth={2.5} /> : <Copy size={11} strokeWidth={2} />}
@@ -277,6 +278,11 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
   const [error, setError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const { copied, copy, countdown } = useClipboard(entry.id);
+  const isMobile = useIsMobile();
+
+  // Phones: tapping anywhere on a field copies it, not just the small button
+  const tapToCopy = (id: string, value?: string) =>
+    isMobile && !editing && value ? { onClick: () => copy(id, value), className: "field-body tap-copy" } : {};
 
   useEffect(() => {
     if (editTrigger && editTrigger > 0) setEditing(true);
@@ -356,7 +362,7 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-      <div style={{ flex: 1, padding: "22px 26px 20px", overflowY: "auto", display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: 1, padding: isMobile ? "8px 16px 24px" : "22px 26px 20px", overflowY: "auto", display: "flex", flexDirection: "column" }}>
 
         {/* Header */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "22px", flexShrink: 0 }}>
@@ -430,7 +436,7 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
           <div className={`field-row${editing ? " editing" : ""}`}>
             <span className="field-label-col">Username</span>
             <div className="field-divider-v" />
-            <div className="field-body">
+            <div className="field-body" {...tapToCopy("username", entry.username)}>
               {editing
                 ? <input value={form.username ?? ""} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="Optional" />
                 : <>
@@ -445,7 +451,7 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
           <div className={`field-row${editing ? " editing" : ""}`}>
             <span className="field-label-col">Email</span>
             <div className="field-divider-v" />
-            <div className="field-body">
+            <div className="field-body" {...tapToCopy("email", entry.email)}>
               {editing
                 ? <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="Optional if username is set" />
                 : <>
@@ -460,7 +466,7 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
           <div className={`field-row${editing ? " editing" : ""}`}>
             <span className="field-label-col">Password</span>
             <div className="field-divider-v" />
-            <div className="field-body">
+            <div className="field-body" {...tapToCopy("password", entry.password)}>
               {editing
                 ? <PasswordInput value={form.password} onChange={(v) => setForm({ ...form, password: v })} />
                 : <>
@@ -468,7 +474,7 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
                       {showPassword ? entry.password : "●".repeat(Math.min(entry.password.length, 20))}
                     </span>
                     <StrengthBars score={strength} />
-                    <button className="btn-action" onClick={() => setShowPassword(!showPassword)} title={showPassword ? "Hide" : "Show"}>
+                    <button className="btn-action" onClick={(e) => { e.stopPropagation(); setShowPassword(!showPassword); }} title={showPassword ? "Hide" : "Show"}>
                       {showPassword ? <EyeOff size={12} strokeWidth={2} /> : <Eye size={12} strokeWidth={2} />}
                     </button>
                     <CopyBtn id="password" value={entry.password} copied={copied} onCopy={copy} />

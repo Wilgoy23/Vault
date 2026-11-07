@@ -78,6 +78,7 @@ export default function AddEntryModal({ folders, entries = [], defaultFolderId, 
 
   return (
     <div
+      className="sheet-backdrop"
       style={{
         position: "fixed", inset: 0, background: "rgba(3,8,20,0.65)",
         padding: "env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)",
@@ -86,7 +87,7 @@ export default function AddEntryModal({ folders, entries = [], defaultFolderId, 
       }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="glass" style={{
+      <div className="glass sheet" style={{
         borderRadius: "var(--radius-lg)", padding: "0", width: "min(420px, calc(100vw - 24px))",
         boxShadow: "0 8px 48px rgba(0,0,0,0.5), 0 0 60px rgba(30,80,200,0.10)",
         display: "flex", flexDirection: "column", maxHeight: "min(90vh, 100%)",

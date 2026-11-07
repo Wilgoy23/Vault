@@ -148,6 +148,9 @@ export function applyTheme(themeId: string) {
   for (const [key, value] of Object.entries(theme.vars)) {
     root.style.setProperty(key, value);
   }
+  // Solid fallback behind the body, so anything iOS exposes past the page
+  // edge (keyboard pan, overscroll) is the theme colour instead of white
+  root.style.background = theme.bg;
   document.body.style.background = theme.bodyBackground;
   document.body.style.backgroundAttachment = "fixed";
 }

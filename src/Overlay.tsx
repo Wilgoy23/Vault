@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit, listen } from "@tauri-apps/api/event";
-import { Eye, EyeOff, ArrowLeft } from "lucide-react";
-import { isUnlocked, listEntries, unlock, writeClipboardText, scheduleClipboardClear, markEntryUsed } from "./api";
+import { Eye, EyeOff, ArrowLeft, AppWindow } from "lucide-react";
+import { isUnlocked, listEntries, unlock, writeClipboardText, scheduleClipboardClear, markEntryUsed, openMainWindow } from "./api";
 import { Entry } from "./types";
 import { generateTOTP, totpSecondsLeft } from "./utils/totp";
 import { applyTheme, DEFAULT_THEME_ID } from "./themes";
@@ -477,20 +477,36 @@ export default function Overlay() {
             </button>
           </form>
           <span style={{ color: "var(--muted)", fontSize: "11px" }}>Escape → close</span>
+          <button
+            className="btn-icon"
+            onClick={() => openMainWindow()}
+            style={{ fontSize: "11px", display: "flex", alignItems: "center", gap: "5px", padding: "4px 8px" }}
+          >
+            <AppWindow size={12} strokeWidth={2} /> Open main window
+          </button>
         </div>
       ) : selectedEntry ? (
         <EntryDetail entry={selectedEntry} onClose={closeEntry} />
       ) : (
         <>
-          <div style={{ padding: "12px", borderBottom: "1px solid var(--border)" }}>
+          <div style={{ padding: "12px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: "8px" }}>
             <input
               ref={inputRef}
               placeholder="Search passwords…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               autoFocus
-              style={{ fontSize: "15px", padding: "10px 14px" }}
+              style={{ fontSize: "15px", padding: "10px 14px", flex: 1, minWidth: 0 }}
             />
+            <button
+              className="btn-icon"
+              onClick={() => openMainWindow()}
+              title="Open main window"
+              aria-label="Open main window"
+              style={{ padding: "8px", flexShrink: 0 }}
+            >
+              <AppWindow size={16} strokeWidth={2} />
+            </button>
           </div>
 
           <div style={{ flex: 1, overflowY: "auto" }}>
