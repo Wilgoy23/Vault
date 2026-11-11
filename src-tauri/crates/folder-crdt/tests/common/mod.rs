@@ -6,7 +6,7 @@
 
 #![allow(dead_code)]
 
-use folder_crdt::{DeviceId, Tag};
+use folder_crdt::{DeviceId, Hlc, HlcClock, Tag};
 use proptest::test_runner::Config;
 
 /// Cases per property. The PRD's gate: 10,000 per law per run.
@@ -21,6 +21,7 @@ pub struct Device {
     pub id: DeviceId,
     seq: u64,
     pub clock: u64,
+    hlc: HlcClock,
 }
 
 impl Device {
@@ -36,6 +37,16 @@ impl Device {
         self.clock += dt;
         self.clock
     }
+
+    /// A hybrid timestamp `dt` seconds on, after observing `seen` (the
+    /// newest clock in the data being edited), as an app does.
+    pub fn now(&mut self, dt: u64, seen: Option<Hlc>) -> Hlc {
+        if let Some(seen) = seen {
+            self.hlc.observe(seen);
+        }
+        let secs = self.tick(dt);
+        self.hlc.tick_at(secs * 1000)
+    }
 }
 
 /// Applies `base` on device 0, then each of `a`, `b`, `c` on its own copy.
@@ -47,13 +58,13 @@ pub fn replicas<S: Clone + Default, O>(
     apply: impl Fn(&mut S, &mut Device, &O),
 ) -> (S, S, S) {
     let mut shared = S::default();
-    let mut dev0 = Device { id: 0, seq: 0, clock: 0 };
+    let mut dev0 = Device { id: 4, seq: 0, clock: 0, hlc: HlcClock::new(4) };
     for op in base {
         apply(&mut shared, &mut dev0, op);
     }
     let run = |id: DeviceId, ops: &[O]| {
         let mut state = shared.clone();
-        let mut dev = Device { id, seq: 0, clock: dev0.clock };
+        let mut dev = Device { id, seq: 0, clock: dev0.clock, hlc: HlcClock::new(id) };
         for op in ops {
             apply(&mut state, &mut dev, op);
         }

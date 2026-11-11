@@ -10,6 +10,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use zeroize::Zeroize;
+
 use crate::field::{Lww, Tag};
 use crate::merge::Merge;
 
@@ -19,7 +22,8 @@ pub type ItemId = Tag;
 /// A point on an ordering line between "before everything" and "after
 /// everything". Compared byte by byte; never ends in a zero byte, so there
 /// is always room for another position between any two.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Zeroize)]
+#[serde(transparent)]
 pub struct Position(Vec<u8>);
 
 impl Position {
@@ -61,10 +65,17 @@ impl Position {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Item<T, C> {
     value: Lww<T, C>,
     position: Lww<Position, C>,
+}
+
+impl<T: Zeroize, C: Zeroize> Zeroize for Item<T, C> {
+    fn zeroize(&mut self) {
+        self.value.zeroize();
+        self.position.zeroize();
+    }
 }
 
 impl<T: Ord, C: Ord> Merge for Item<T, C> {
@@ -169,6 +180,45 @@ impl<T: Ord, C: Ord> Merge for Sequence<T, C> {
         self.removed.append(&mut other.removed);
         let removed = &self.removed;
         self.items.retain(|id, _| !removed.contains(id));
+    }
+}
+
+/// Serialized as `{"items": [[id, item], ...], "removed": [id, ...]}`.
+impl<T: Serialize, C: Serialize> Serialize for Sequence<T, C> {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        #[serde(bound(serialize = "T: Serialize, C: Serialize"))]
+        struct Repr<'a, T, C> {
+            items: Vec<(&'a ItemId, &'a Item<T, C>)>,
+            removed: &'a BTreeSet<ItemId>,
+        }
+        Repr { items: self.items.iter().collect(), removed: &self.removed }.serialize(s)
+    }
+}
+
+impl<'de, T: Ord + Deserialize<'de>, C: Ord + Deserialize<'de>> Deserialize<'de> for Sequence<T, C> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(bound(deserialize = "T: Deserialize<'de>, C: Deserialize<'de>"))]
+        struct Repr<T, C> {
+            items: Vec<(ItemId, Item<T, C>)>,
+            removed: BTreeSet<ItemId>,
+        }
+        let r = Repr::<T, C>::deserialize(d)?;
+        let mut s = Sequence { items: BTreeMap::new(), removed: r.removed };
+        for (id, item) in r.items {
+            s.merge(Sequence { items: BTreeMap::from([(id, item)]), removed: BTreeSet::new() });
+        }
+        Ok(s)
+    }
+}
+
+impl<T: Zeroize, C: Zeroize> Zeroize for Sequence<T, C> {
+    fn zeroize(&mut self) {
+        for (_, mut item) in std::mem::take(&mut self.items) {
+            item.zeroize();
+        }
+        self.removed.clear();
     }
 }
 

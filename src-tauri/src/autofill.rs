@@ -53,9 +53,9 @@ pub fn is_enabled() -> bool {
 /// Writes the snapshot and registers its logins with iOS. Also how AutoFill
 /// is turned on.
 pub fn publish(data: &VaultData) -> Result<(), String> {
+    let entries = data.entry_views();
     let snapshot = Snapshot {
-        entries: data
-            .entries
+        entries: entries
             .iter()
             .map(|e| SnapshotEntry {
                 id: &e.id,

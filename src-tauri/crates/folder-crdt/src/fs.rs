@@ -47,6 +47,35 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
     }
 }
 
+/// This installation's device id, kept in `dir/device-id`; created on first
+/// call. `dir` must be local to the device (an app-data folder), never the
+/// synced folder: two devices sharing an id could make clashing timestamps.
+pub fn device_id(dir: &Path) -> io::Result<crate::DeviceId> {
+    let path = dir.join("device-id");
+    if let Ok(text) = fs::read_to_string(&path) {
+        match u64::from_str_radix(text.trim(), 16) {
+            Ok(id) if id != crate::LEGACY_DEVICE => return Ok(id),
+            _ => {} // Unreadable: replace it
+        }
+    }
+    let id = random_device_id()?;
+    fs::create_dir_all(dir)?;
+    write_atomic(&path, format!("{id:016x}\n").as_bytes())?;
+    Ok(id)
+}
+
+/// A fresh random device id, never [`LEGACY_DEVICE`](crate::LEGACY_DEVICE).
+pub fn random_device_id() -> io::Result<crate::DeviceId> {
+    loop {
+        let mut bytes = [0u8; 8];
+        getrandom::getrandom(&mut bytes).map_err(|e| io::Error::other(e.to_string()))?;
+        let id = u64::from_le_bytes(bytes);
+        if id != crate::LEGACY_DEVICE {
+            return Ok(id);
+        }
+    }
+}
+
 /// The extra copies sync clients leave beside `<stem>.<ext>` when two
 /// devices changed it at once: "vault (Will's conflicted copy).enc"
 /// (Dropbox), "vault-LAPTOP.enc" (OneDrive), "vault.sync-conflict-….enc"
@@ -83,6 +112,20 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn device_id_is_created_once_then_reused() {
+        let dir = temp_dir("device_id");
+        let first = device_id(&dir).unwrap();
+        assert_ne!(first, crate::LEGACY_DEVICE);
+        assert_eq!(device_id(&dir).unwrap(), first);
+
+        // A damaged file is replaced rather than trusted
+        fs::write(dir.join("device-id"), "not hex").unwrap();
+        let replaced = device_id(&dir).unwrap();
+        assert_ne!(replaced, crate::LEGACY_DEVICE);
+        assert_eq!(device_id(&dir).unwrap(), replaced);
     }
 
     #[test]

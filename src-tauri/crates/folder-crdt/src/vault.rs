@@ -1,56 +1,194 @@
-//! Vault's record types and merge rules, moved here unchanged from Vault's
-//! `vault.rs`. This module is Vault-specific on purpose: phase 2 replaces it
-//! with a generic `RecordSet<T>` and field types, implemented for these
-//! structs by hand, then deletes it.
+//! Vault's records, built on the generic types: schema 2.
 //!
-//! Syncing is left to whatever already syncs a folder (OneDrive, Dropbox,
-//! iCloud Drive, Syncthing). Those tools only move whole files, so two
-//! devices editing offline produce two versions of it. [`merge`] reconciles
-//! them entry by entry, so both devices' edits survive.
+//! Every field is its own register with its own clock, so two devices that
+//! edit different fields of one entry both keep their edit; passwords keep
+//! every write, so a rotation that loses still lands in history; use counts
+//! add up across devices. Deletes are final ([`DeleteWins`]): a deleted
+//! entry's data, passwords included, is dropped from the file on every
+//! device.
+//!
+//! The app never sees these types directly. It edits through the methods on
+//! [`VaultData`] and shows [`EntryView`] and [`FolderView`], which keep the
+//! flat shape entries had in schema 1, so the UI didn't change. Schema 1
+//! files are read and converted by [`legacy`].
+
+pub mod legacy;
+
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-/// A user-defined folder for grouping entries.
-#[derive(Debug, Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
-pub struct Folder {
-    pub id: String,
-    pub name: String,
-    /// When the folder was created or last renamed (unix seconds), so a sync
-    /// merge can tell which device's name is newer. 0 on folders written
-    /// before this field existed.
-    #[serde(default)]
-    pub updated_at: u64,
+use crate::{Counter, DeleteWins, Hlc, Immutable, Lww, LwwHistory, Max, Merge, Record, RecordSet, Unknown};
+
+/// The app identifier in Vault's file header.
+pub const APP: &str = "vault";
+
+/// The schema this build writes. 0 and 1 are read through [`legacy`].
+pub const SCHEMA: u32 = 2;
+
+/// How many superseded passwords each entry keeps.
+pub const MAX_PASSWORD_HISTORY: usize = 10;
+
+/// The current password and the ones before it.
+pub type Password = LwwHistory<Secret, Hlc, { MAX_PASSWORD_HISTORY + 1 }>;
+
+/// Text wiped from memory when dropped. Every string an entry holds is one,
+/// so a value that loses a merge is wiped too, not just left in freed memory.
+#[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+#[serde(transparent)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(text: String) -> Self {
+        Secret(text)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
-/// Records that an entry or folder was deleted, so a sync merge doesn't bring
-/// it back from another device's copy that still has it. Ids are UUIDs, so
-/// entries and folders share one list.
-#[derive(Debug, Clone, Serialize, Deserialize, Zeroize)]
-pub struct Tombstone {
-    pub id: String,
-    /// Unix seconds
-    pub deleted_at: u64,
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Secret(..)")
+    }
 }
 
 /// What a vault item represents. Only `Login` exists today; the field is
 /// here so secure notes and cards can be added later without a format
-/// change, and so vaults written now already carry it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EntryKind {
     #[default]
     Login,
 }
 
-// Not secret, but `Entry` zeroizes every field on drop and so needs this.
+// Not secret, but the records zeroize every field and so need this.
 impl Zeroize for EntryKind {
     fn zeroize(&mut self) {
         *self = EntryKind::Login;
     }
 }
 
-/// A password this entry used to have, kept so a bad rotation can be undone.
+// ── Records ───────────────────────────────────────────────────────────────────
+
+/// A login, as stored and synced.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Zeroize)]
+pub struct Entry {
+    pub kind: Immutable<EntryKind>,
+    /// When the entry was made. Entries are listed in this order.
+    pub created: Immutable<Hlc>,
+    pub name: Lww<Secret, Hlc>,
+    pub username: Lww<Option<Secret>, Hlc>,
+    /// May be empty: an entry needs either an email or a username, not both.
+    pub email: Lww<Secret, Hlc>,
+    pub password: Password,
+    pub url: Lww<Option<Secret>, Hlc>,
+    pub notes: Lww<Option<Secret>, Hlc>,
+    pub folder_id: Lww<Option<String>, Hlc>,
+    pub totp_secret: Lww<Option<Secret>, Hlc>,
+    /// When a credential was last copied (unix seconds).
+    pub last_used: Max<u64>,
+    /// How many times a credential has been copied, per device.
+    pub uses: Counter,
+    #[serde(flatten)]
+    pub extra: Unknown,
+}
+
+impl Merge for Entry {
+    fn merge(&mut self, other: Self) {
+        self.kind.merge(other.kind);
+        self.created.merge(other.created);
+        self.name.merge(other.name);
+        self.username.merge(other.username);
+        self.email.merge(other.email);
+        self.password.merge(other.password);
+        self.url.merge(other.url);
+        self.notes.merge(other.notes);
+        self.folder_id.merge(other.folder_id);
+        self.totp_secret.merge(other.totp_secret);
+        self.last_used.merge(other.last_used);
+        self.uses.merge(other.uses);
+        self.extra.merge(other.extra);
+    }
+}
+
+impl Record for Entry {
+    type Clock = Hlc;
+
+    /// The newest edit. Copying a credential doesn't count, as it never has.
+    fn last_edit(&self) -> Option<Hlc> {
+        [
+            self.name.clock(),
+            self.username.clock(),
+            self.email.clock(),
+            self.password.clock(),
+            self.url.clock(),
+            self.notes.clock(),
+            self.folder_id.clock(),
+            self.totp_secret.clock(),
+        ]
+        .into_iter()
+        .flatten()
+        .max()
+        .copied()
+    }
+}
+
+/// A user-defined folder for grouping entries.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Zeroize)]
+pub struct Folder {
+    /// When the folder was made. Folders are listed in this order.
+    pub created: Immutable<Hlc>,
+    pub name: Lww<Secret, Hlc>,
+    #[serde(flatten)]
+    pub extra: Unknown,
+}
+
+impl Merge for Folder {
+    fn merge(&mut self, other: Self) {
+        self.created.merge(other.created);
+        self.name.merge(other.name);
+        self.extra.merge(other.extra);
+    }
+}
+
+impl Record for Folder {
+    type Clock = Hlc;
+
+    fn last_edit(&self) -> Option<Hlc> {
+        self.name.clock().copied()
+    }
+}
+
+/// The decrypted vault contents (serialized to JSON before encryption).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+pub struct VaultData {
+    pub entries: RecordSet<String, Entry, DeleteWins>,
+    pub folders: RecordSet<String, Folder, DeleteWins>,
+    #[serde(flatten)]
+    pub extra: Unknown,
+}
+
+impl Merge for VaultData {
+    fn merge(&mut self, mut other: Self) {
+        Merge::merge(&mut self.entries, std::mem::take(&mut other.entries));
+        Merge::merge(&mut self.folders, std::mem::take(&mut other.folders));
+        self.extra.merge(std::mem::take(&mut other.extra));
+    }
+}
+
+/// `data` serialized, for telling whether a merge changed anything. Every
+/// collection is sorted, so equal contents always give equal bytes.
+pub fn canonical(data: &VaultData) -> Zeroizing<Vec<u8>> {
+    Zeroizing::new(serde_json::to_vec(data).unwrap_or_default())
+}
+
+// ── What the app shows ────────────────────────────────────────────────────────
+
+/// A password an entry used to have, kept so a bad rotation can be undone.
 #[derive(Debug, Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct PastPassword {
     pub password: String,
@@ -58,21 +196,16 @@ pub struct PastPassword {
     pub replaced_at: u64,
 }
 
-/// How many superseded passwords to keep per entry. Old ones are dropped
-/// oldest-first so the vault cannot grow without bound.
-pub const MAX_PASSWORD_HISTORY: usize = 10;
-
-/// A single password entry. Zeroized on drop so plaintext secrets don't
-/// linger in freed memory (clones included).
+/// An entry as the app shows it: every field's current value. Also the
+/// shape entries were stored in up to schema 1, which [`legacy`] reads.
 #[derive(Debug, Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
-pub struct Entry {
+pub struct EntryView {
     pub id: String,
     pub name: String,
     #[serde(default)]
     pub kind: EntryKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
-    /// May be empty: an entry needs either an email or a username, not both.
     #[serde(default)]
     pub email: String,
     pub password: String,
@@ -84,9 +217,8 @@ pub struct Entry {
     pub totp_secret: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
-    /// When the password itself last changed (unix seconds). `None` on
-    /// entries written before this field existed; the audit falls back to
-    /// `updated_at` for those.
+    /// When the password itself last changed (unix seconds). `None` only on
+    /// schema 0 and 1 entries written before this was tracked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password_changed_at: Option<u64>,
     /// Superseded passwords, oldest first.
@@ -100,282 +232,218 @@ pub struct Entry {
     pub use_count: u64,
 }
 
-/// The decrypted vault contents (serialized to JSON before encryption).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
-pub struct VaultData {
-    pub entries: Vec<Entry>,
+/// A folder as the app shows it.
+#[derive(Debug, Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+pub struct FolderView {
+    pub id: String,
+    pub name: String,
+    /// When the folder was created or last renamed (unix seconds).
     #[serde(default)]
-    pub folders: Vec<Folder>,
-    /// Deleted entry and folder ids. Kept indefinitely: each is a few dozen
-    /// bytes, and pruning one would let a long-offline device resurrect it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub deleted: Vec<Tombstone>,
+    pub updated_at: u64,
 }
 
-/// Merges another copy of this vault into `ours`. The result is the same
-/// whichever side is `ours`, and merging the same copy twice changes nothing,
-/// so devices converge however their sync client interleaves the files.
-///
-/// - Entries and folders: the most recently updated copy wins.
-/// - Passwords follow their own clock (`password_changed_at`), so a
-///   rotation on one device isn't undone by a notes edit on another. The
-///   losing password goes into the history rather than being dropped.
-/// - Deletions win over any edit made before them.
-pub fn merge(ours: &mut VaultData, mut theirs: VaultData) {
-    for tomb in std::mem::take(&mut theirs.deleted) {
-        match ours.deleted.iter_mut().find(|t| t.id == tomb.id) {
-            Some(t) => t.deleted_at = t.deleted_at.max(tomb.deleted_at),
-            None => ours.deleted.push(tomb),
+/// The fields a person edits, as the app's form sends them.
+#[derive(Clone, Default, Zeroize, ZeroizeOnDrop)]
+pub struct Fields {
+    pub name: String,
+    pub username: Option<String>,
+    pub email: String,
+    pub password: String,
+    pub url: Option<String>,
+    pub notes: Option<String>,
+    pub folder_id: Option<String>,
+    pub totp_secret: Option<String>,
+}
+
+fn text(field: &Lww<Secret, Hlc>) -> String {
+    field.get().map_or_else(String::new, |s| s.as_str().to_owned())
+}
+
+fn optional(field: &Lww<Option<Secret>, Hlc>) -> Option<String> {
+    field.get().and_then(Option::as_ref).map(|s| s.as_str().to_owned())
+}
+
+fn secret(text: &mut String) -> Secret {
+    Secret(std::mem::take(text))
+}
+
+fn optional_secret(text: &mut Option<String>) -> Option<Secret> {
+    text.take().map(Secret)
+}
+
+/// Writes `value` unless the field already holds it, so saving a form only
+/// touches the fields that changed, and an edit elsewhere to another field
+/// survives.
+fn set_if_changed<T: Ord>(field: &mut Lww<T, Hlc>, value: T, now: Hlc) {
+    if field.get() != Some(&value) {
+        field.set(value, now);
+    }
+}
+
+impl Entry {
+    /// Every field's current value. A folder that no longer exists reads as
+    /// no folder.
+    pub fn view(&self, id: &str, folders: &RecordSet<String, Folder, DeleteWins>) -> EntryView {
+        // Each superseded password was replaced by the write after it
+        let writes: Vec<(&Hlc, &Secret)> = self
+            .password
+            .clock()
+            .zip(self.password.get())
+            .into_iter()
+            .chain(self.password.history())
+            .collect();
+        let mut password_history: Vec<PastPassword> = writes
+            .windows(2)
+            .map(|w| PastPassword { password: w[1].1.as_str().to_owned(), replaced_at: w[0].0.secs() })
+            .collect();
+        password_history.reverse();
+
+        EntryView {
+            id: id.to_owned(),
+            name: text(&self.name),
+            kind: self.kind.get().copied().unwrap_or_default(),
+            username: optional(&self.username),
+            email: text(&self.email),
+            password: self.password.get().map_or_else(String::new, |s| s.as_str().to_owned()),
+            url: optional(&self.url),
+            notes: optional(&self.notes),
+            folder_id: self.folder_id.get().cloned().flatten().filter(|f| folders.get(f).is_some()),
+            totp_secret: optional(&self.totp_secret),
+            created_at: self.created.get().map_or(0, Hlc::secs),
+            updated_at: self.last_edit().map_or(0, |c| c.secs()),
+            password_changed_at: self.password.clock().map(Hlc::secs),
+            password_history,
+            last_used_at: self.last_used.get().copied(),
+            use_count: self.uses.value(),
         }
     }
+}
 
-    for entry in std::mem::take(&mut theirs.entries) {
-        match ours.entries.iter_mut().find(|e| e.id == entry.id) {
-            Some(existing) => merge_entry(existing, entry),
-            None => ours.entries.push(entry),
+impl Folder {
+    pub fn view(&self, id: &str) -> FolderView {
+        FolderView {
+            id: id.to_owned(),
+            name: text(&self.name),
+            updated_at: self.last_edit().map_or(0, |c| c.secs()),
         }
     }
+}
 
-    for folder in std::mem::take(&mut theirs.folders) {
-        match ours.folders.iter_mut().find(|f| f.id == folder.id) {
-            Some(existing) => {
-                if (folder.updated_at, &folder.name) > (existing.updated_at, &existing.name) {
-                    *existing = folder;
-                }
+// ── Edits ─────────────────────────────────────────────────────────────────────
+//
+// Each of Vault's commands, minus the saving. `now` is a fresh timestamp
+// from this device's clock, which must have observed `latest_clock()`.
+
+const NO_ENTRY: &str = "Entry not found";
+const NO_FOLDER: &str = "Folder not found";
+
+impl VaultData {
+    /// Every entry, oldest first.
+    pub fn entry_views(&self) -> Vec<EntryView> {
+        let mut entries: Vec<_> = self.entries.iter().collect();
+        entries.sort_by(|(a_id, a), (b_id, b)| (a.created.get(), a_id).cmp(&(b.created.get(), b_id)));
+        entries.into_iter().map(|(id, e)| e.view(id, &self.folders)).collect()
+    }
+
+    pub fn entry_view(&self, id: &str) -> Option<EntryView> {
+        self.entries.get(id).map(|e| e.view(id, &self.folders))
+    }
+
+    /// Every folder, oldest first.
+    pub fn folder_views(&self) -> Vec<FolderView> {
+        let mut folders: Vec<_> = self.folders.iter().collect();
+        folders.sort_by(|(a_id, a), (b_id, b)| (a.created.get(), a_id).cmp(&(b.created.get(), b_id)));
+        folders.into_iter().map(|(id, f)| f.view(id)).collect()
+    }
+
+    /// The newest timestamp anywhere in the vault.
+    pub fn latest_clock(&self) -> Option<Hlc> {
+        self.entries.latest_clock().max(self.folders.latest_clock())
+    }
+
+    pub fn add_entry(&mut self, id: String, mut fields: Fields, now: Hlc) -> Result<EntryView, &'static str> {
+        if self.entries.is_deleted(&id) || self.entries.get(&id).is_some() {
+            return Err("An entry with this id already exists");
+        }
+        let f = &mut fields;
+        let entry = Entry {
+            kind: Immutable::new(EntryKind::Login),
+            created: Immutable::new(now),
+            name: Lww::new(secret(&mut f.name), now),
+            username: Lww::new(optional_secret(&mut f.username), now),
+            email: Lww::new(secret(&mut f.email), now),
+            password: Password::new(secret(&mut f.password), now),
+            url: Lww::new(optional_secret(&mut f.url), now),
+            notes: Lww::new(optional_secret(&mut f.notes), now),
+            folder_id: Lww::new(f.folder_id.take(), now),
+            totp_secret: Lww::new(optional_secret(&mut f.totp_secret), now),
+            ..Entry::default()
+        };
+        self.entries.upsert(id.clone(), entry);
+        self.entry_view(&id).ok_or(NO_ENTRY)
+    }
+
+    /// Saves the form for entry `id`. Only fields whose value changed are
+    /// written; a changed password pushes the old one into history.
+    pub fn update_entry(&mut self, id: &str, mut fields: Fields, now: Hlc) -> Result<EntryView, &'static str> {
+        let e = self.entries.get_mut(id).ok_or(NO_ENTRY)?;
+        let f = &mut fields;
+        set_if_changed(&mut e.name, secret(&mut f.name), now);
+        set_if_changed(&mut e.username, optional_secret(&mut f.username), now);
+        set_if_changed(&mut e.email, secret(&mut f.email), now);
+        let password = secret(&mut f.password);
+        if e.password.get() != Some(&password) {
+            e.password.set(password, now);
+        }
+        set_if_changed(&mut e.url, optional_secret(&mut f.url), now);
+        set_if_changed(&mut e.notes, optional_secret(&mut f.notes), now);
+        set_if_changed(&mut e.folder_id, f.folder_id.take(), now);
+        set_if_changed(&mut e.totp_secret, optional_secret(&mut f.totp_secret), now);
+        self.entry_view(id).ok_or(NO_ENTRY)
+    }
+
+    /// Records that a credential from entry `id` was copied.
+    pub fn mark_entry_used(&mut self, id: &str, now: Hlc) -> Result<(), &'static str> {
+        let e = self.entries.get_mut(id).ok_or(NO_ENTRY)?;
+        e.uses.increment(now.device, 1);
+        e.last_used.set(now.secs());
+        Ok(())
+    }
+
+    pub fn delete_entry(&mut self, id: &str, now: Hlc) -> Result<(), &'static str> {
+        self.entries.get(id).ok_or(NO_ENTRY)?;
+        self.entries.delete(id.to_owned(), now);
+        Ok(())
+    }
+
+    pub fn add_folder(&mut self, id: String, name: String, now: Hlc) -> Result<FolderView, &'static str> {
+        if self.folders.is_deleted(&id) || self.folders.get(&id).is_some() {
+            return Err("A folder with this id already exists");
+        }
+        let folder = Folder {
+            created: Immutable::new(now),
+            name: Lww::new(Secret(name), now),
+            extra: Unknown::default(),
+        };
+        self.folders.upsert(id.clone(), folder);
+        self.folders.get(&id).map(|f| f.view(&id)).ok_or(NO_FOLDER)
+    }
+
+    pub fn rename_folder(&mut self, id: &str, name: String, now: Hlc) -> Result<(), &'static str> {
+        let f = self.folders.get_mut(id).ok_or(NO_FOLDER)?;
+        set_if_changed(&mut f.name, Secret(name), now);
+        Ok(())
+    }
+
+    /// Deletes folder `id` and files its entries under no folder.
+    pub fn delete_folder(&mut self, id: &str, now: Hlc) -> Result<(), &'static str> {
+        self.folders.get(id).ok_or(NO_FOLDER)?;
+        self.folders.delete(id.to_owned(), now);
+        for (_, e) in self.entries.iter_mut() {
+            if e.folder_id.get().and_then(Option::as_deref) == Some(id) {
+                e.folder_id.set(None, now);
             }
-            None => ours.folders.push(folder),
         }
-    }
-
-    let deleted = &ours.deleted;
-    let survives = |id: &str, updated_at: u64| {
-        deleted.iter().find(|t| t.id == id).map_or(true, |t| updated_at > t.deleted_at)
-    };
-    ours.entries.retain(|e| survives(&e.id, e.updated_at));
-    ours.folders.retain(|f| survives(&f.id, f.updated_at));
-
-    // An entry filed under a folder another device deleted ends up unfiled,
-    // as it would have had the delete happened here.
-    for entry in ours.entries.iter_mut() {
-        if let Some(folder_id) = &entry.folder_id {
-            if !ours.folders.iter().any(|f| &f.id == folder_id) {
-                entry.folder_id = None;
-            }
-        }
-    }
-}
-
-/// A total order on two copies of one entry: newer edit first, then the
-/// serialized content, so equal timestamps still pick the same winner on
-/// every device instead of each keeping its own.
-fn entry_is_newer(a: &Entry, b: &Entry) -> bool {
-    if a.updated_at != b.updated_at {
-        return a.updated_at > b.updated_at;
-    }
-    let a_json = Zeroizing::new(serde_json::to_vec(a).unwrap_or_default());
-    let b_json = Zeroizing::new(serde_json::to_vec(b).unwrap_or_default());
-    *a_json > *b_json
-}
-
-fn password_is_newer(a: &Entry, b: &Entry) -> bool {
-    (a.password_changed_at.unwrap_or(0), &a.password)
-        > (b.password_changed_at.unwrap_or(0), &b.password)
-}
-
-fn merge_entry(ours: &mut Entry, mut theirs: Entry) {
-    if entry_is_newer(&theirs, ours) {
-        std::mem::swap(ours, &mut theirs);
-    }
-    // `ours` now holds the winning fields and `theirs` the copy it beat,
-    // except that the password is decided separately.
-    if password_is_newer(&theirs, ours) {
-        std::mem::swap(&mut ours.password, &mut theirs.password);
-        std::mem::swap(&mut ours.password_changed_at, &mut theirs.password_changed_at);
-    }
-
-    ours.last_used_at = ours.last_used_at.max(theirs.last_used_at);
-    ours.use_count = ours.use_count.max(theirs.use_count);
-
-    let mut history = std::mem::take(&mut ours.password_history);
-    for past in std::mem::take(&mut theirs.password_history) {
-        let known = history
-            .iter()
-            .any(|h| h.password == past.password && h.replaced_at == past.replaced_at);
-        if !known {
-            history.push(past);
-        }
-    }
-    // Two devices that each rotated the password: keep the one that lost, in
-    // case it is the one the website actually has.
-    if theirs.password != ours.password && !history.iter().any(|h| h.password == theirs.password) {
-        history.push(PastPassword {
-            password: std::mem::take(&mut theirs.password),
-            replaced_at: ours.password_changed_at.unwrap_or(ours.updated_at),
-        });
-    }
-    history.sort_by(|a, b| (a.replaced_at, &a.password).cmp(&(b.replaced_at, &b.password)));
-    if history.len() > MAX_PASSWORD_HISTORY {
-        history.drain(..history.len() - MAX_PASSWORD_HISTORY);
-    }
-    ours.password_history = history;
-}
-
-/// `data` in an order-independent form, for telling whether a merge changed
-/// anything. Comparing the raw vaults would not do: the same entries in a
-/// different order would look like a change and make two devices rewrite the
-/// file back and forth.
-pub fn canonical(data: &VaultData) -> Zeroizing<Vec<u8>> {
-    #[derive(Serialize)]
-    struct Canonical<'a> {
-        entries: Vec<&'a Entry>,
-        folders: Vec<&'a Folder>,
-        deleted: Vec<&'a Tombstone>,
-    }
-    let mut c = Canonical {
-        entries: data.entries.iter().collect(),
-        folders: data.folders.iter().collect(),
-        deleted: data.deleted.iter().collect(),
-    };
-    c.entries.sort_by(|a, b| a.id.cmp(&b.id));
-    c.folders.sort_by(|a, b| a.id.cmp(&b.id));
-    c.deleted.sort_by(|a, b| a.id.cmp(&b.id));
-    Zeroizing::new(serde_json::to_vec(&c).unwrap_or_default())
-}
-
-// The generic trait over the rules above, so the merge-law property tests
-// run against exactly what Vault ships.
-
-impl crate::Merge for VaultData {
-    fn merge(&mut self, other: Self) {
-        merge(self, other);
-    }
-}
-
-impl crate::Merge for Entry {
-    fn merge(&mut self, other: Self) {
-        merge_entry(self, other);
-    }
-}
-
-/// The rule `merge` applies to two copies of one folder.
-impl crate::Merge for Folder {
-    fn merge(&mut self, other: Self) {
-        if (other.updated_at, &other.name) > (self.updated_at, &self.name) {
-            *self = other;
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn entry_at(id: &str, name: &str, password: &str, updated_at: u64) -> Entry {
-        Entry {
-            id: id.into(),
-            name: name.into(),
-            kind: EntryKind::Login,
-            username: None,
-            email: "user@example.com".into(),
-            password: password.into(),
-            url: None,
-            notes: None,
-            folder_id: None,
-            totp_secret: None,
-            created_at: 1,
-            updated_at,
-            password_changed_at: Some(1),
-            password_history: Vec::new(),
-            last_used_at: None,
-            use_count: 0,
-        }
-    }
-
-    fn vault_of(entries: Vec<Entry>) -> VaultData {
-        VaultData { entries, folders: Vec::new(), deleted: Vec::new() }
-    }
-
-    fn reparse(data: &VaultData) -> VaultData {
-        serde_json::from_slice(&serde_json::to_vec(data).unwrap()).unwrap()
-    }
-
-    #[test]
-    fn merging_keeps_edits_from_both_sides_whichever_way_round() {
-        let a = vault_of(vec![entry_at("1", "Old name", "pw", 10), entry_at("2", "Only on A", "pw", 10)]);
-        let b = vault_of(vec![entry_at("1", "New name", "pw", 20), entry_at("3", "Only on B", "pw", 10)]);
-
-        let mut ab = reparse(&a);
-        merge(&mut ab, reparse(&b));
-        let mut ba = reparse(&b);
-        merge(&mut ba, reparse(&a));
-
-        assert_eq!(*canonical(&ab), *canonical(&ba));
-        assert_eq!(ab.entries.len(), 3);
-        assert_eq!(ab.entries.iter().find(|e| e.id == "1").unwrap().name, "New name");
-
-        // Merging the same copy again changes nothing
-        let before = canonical(&ab);
-        merge(&mut ab, reparse(&b));
-        assert_eq!(*canonical(&ab), *before);
-    }
-
-    #[test]
-    fn a_password_rotation_survives_a_later_edit_on_another_device() {
-        // A rotated the password at t=100; B, not having seen that, edited
-        // the notes at t=200
-        let mut a = entry_at("1", "Site", "new-pw", 100);
-        a.password_changed_at = Some(100);
-        a.password_history.push(PastPassword { password: "old-pw".into(), replaced_at: 100 });
-        let mut b = entry_at("1", "Site", "old-pw", 200);
-        b.notes = Some("edited on B".into());
-
-        let mut merged = vault_of(vec![a]);
-        merge(&mut merged, vault_of(vec![b]));
-        let e = &merged.entries[0];
-        assert_eq!(e.password, "new-pw");
-        assert_eq!(e.notes.as_deref(), Some("edited on B"));
-        assert_eq!(e.password_history.len(), 1);
-    }
-
-    #[test]
-    fn two_rotations_keep_the_losing_password_in_history() {
-        let mut a = entry_at("1", "Site", "from-a", 100);
-        a.password_changed_at = Some(100);
-        let mut b = entry_at("1", "Site", "from-b", 150);
-        b.password_changed_at = Some(150);
-
-        let mut merged = vault_of(vec![a]);
-        merge(&mut merged, vault_of(vec![b]));
-        let e = &merged.entries[0];
-        assert_eq!(e.password, "from-b");
-        assert!(e.password_history.iter().any(|p| p.password == "from-a"));
-    }
-
-    #[test]
-    fn a_delete_beats_earlier_edits_but_not_later_ones() {
-        let mut deleted_here = vault_of(vec![]);
-        deleted_here.deleted.push(Tombstone { id: "1".into(), deleted_at: 50 });
-        deleted_here.deleted.push(Tombstone { id: "2".into(), deleted_at: 50 });
-
-        let elsewhere = vault_of(vec![entry_at("1", "Stale", "pw", 40), entry_at("2", "Edited after", "pw", 60)]);
-        merge(&mut deleted_here, elsewhere);
-
-        let names: Vec<&str> = deleted_here.entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, vec!["Edited after"]);
-    }
-
-    #[test]
-    fn a_folder_deleted_elsewhere_unfiles_its_entries() {
-        let mut filed = entry_at("1", "Filed", "pw", 10);
-        filed.folder_id = Some("f".into());
-        let mut here = vault_of(vec![filed]);
-        here.folders.push(Folder { id: "f".into(), name: "Work".into(), updated_at: 5 });
-
-        let mut there = vault_of(vec![]);
-        there.deleted.push(Tombstone { id: "f".into(), deleted_at: 20 });
-        merge(&mut here, there);
-
-        assert!(here.folders.is_empty());
-        assert_eq!(here.entries[0].folder_id, None);
+        Ok(())
     }
 }

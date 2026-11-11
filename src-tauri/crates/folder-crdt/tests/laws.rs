@@ -7,8 +7,19 @@ use folder_crdt::*;
 use proptest::collection::vec;
 use proptest::prelude::*;
 
+/// `state` survives being written to JSON and read back.
+fn round_trips<T>(state: &T) -> Result<(), TestCaseError>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
+{
+    let json = serde_json::to_string(state).map_err(|e| TestCaseError::fail(e.to_string()))?;
+    let back: T = serde_json::from_str(&json).map_err(|e| TestCaseError::fail(format!("{e}: {json}")))?;
+    prop_assert_eq!(&back, state, "JSON: {}", json);
+    Ok(())
+}
+
 /// A property test: random histories on a base and three devices, then the
-/// three laws on the results.
+/// three laws on the results, and a JSON round trip of their merge.
 macro_rules! laws {
     ($name:ident, $state:ty, $op:expr, $apply:expr) => {
         proptest! {
@@ -22,6 +33,7 @@ macro_rules! laws {
             ) {
                 let (a, b, c) = replicas::<$state, _>(&base, &a, &b, &c, $apply);
                 check_laws(&a, &b, &c, |s| s.clone()).map_err(TestCaseError::fail)?;
+                round_trips(&merged(merged(a, b), c))?;
             }
         }
     };
@@ -51,6 +63,13 @@ laws!(
 );
 
 laws!(max, Max<u8>, val(), |s: &mut Max<u8>, _: &mut Device, v: &u8| s.set(*v));
+
+laws!(immutable, Immutable<u8>, val(), |s: &mut Immutable<u8>, _: &mut Device, v: &u8| {
+    // Set at creation only; a device that finds it empty creates it
+    if s.get().is_none() {
+        *s = Immutable::new(*v);
+    }
+});
 
 laws!(counter, Counter, 0u64..3, |s: &mut Counter, d: &mut Device, by: &u64| s.increment(d.id, *by));
 
@@ -150,7 +169,7 @@ proptest! {
 // ── RecordSet ─────────────────────────────────────────────────────────────────
 
 /// A small record of two field types.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Note {
     title: Lww<u8, u64>,
     tags: AddWinsSet<u8>,

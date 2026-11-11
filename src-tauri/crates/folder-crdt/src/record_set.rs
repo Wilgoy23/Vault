@@ -1,7 +1,11 @@
 //! A collection of records keyed by id, with deletes that sync.
 
+use std::borrow::Borrow;
 use std::collections::{btree_map, BTreeMap};
 use std::marker::PhantomData;
+
+use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 use crate::merge::Merge;
 
@@ -22,7 +26,7 @@ pub trait DeletePolicy {
 /// A delete hides every edit made before it; an edit made after it brings
 /// the record back. The record's data is kept (hidden) so all devices agree
 /// on what comes back: clear sensitive fields with ordinary writes at the
-/// delete's clock before deleting. Vault's current behaviour.
+/// delete's clock before deleting. Vault's behaviour up to format 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EditRevives;
 
@@ -42,10 +46,19 @@ impl DeletePolicy for DeleteWins {
 /// Records of type `T` keyed by `K`, plus a tombstone for each deleted id.
 /// Tombstones are kept indefinitely: dropping one would let a device that
 /// was offline when the delete happened bring the record back.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serialized as `{"records": {id: record}, "deleted": {id: clock}}`. In
+/// JSON, ids must be strings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "K: Serialize, T: Serialize, T::Clock: Serialize",
+    deserialize = "K: Ord + Deserialize<'de>, T: Deserialize<'de>, T::Clock: Deserialize<'de>"
+))]
 pub struct RecordSet<K, T: Record, P = EditRevives> {
     records: BTreeMap<K, T>,
+    #[serde(default)]
     deleted: BTreeMap<K, T::Clock>,
+    #[serde(skip)]
     policy: PhantomData<P>,
 }
 
@@ -60,8 +73,12 @@ impl<K: Ord + Clone, T: Record, P: DeletePolicy> RecordSet<K, T, P> {
         Self::default()
     }
 
-    fn visible(&self, id: &K, record: &T) -> bool {
-        match self.deleted.get(id) {
+    fn visible<Q>(deleted: &BTreeMap<K, T::Clock>, id: &Q, record: &T) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        match deleted.get(id) {
             None => true,
             Some(deleted_at) => {
                 !P::DELETE_WINS && record.last_edit().is_some_and(|edit| edit > *deleted_at)
@@ -85,18 +102,22 @@ impl<K: Ord + Clone, T: Record, P: DeletePolicy> RecordSet<K, T, P> {
     }
 
     /// The record under `id`, unless it is deleted.
-    pub fn get(&self, id: &K) -> Option<&T> {
-        self.records.get(id).filter(|r| self.visible(id, r))
+    pub fn get<Q>(&self, id: &Q) -> Option<&T>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        self.records.get(id).filter(|r| Self::visible(&self.deleted, id, r))
     }
 
     /// The record under `id` for editing, unless it is deleted.
-    pub fn get_mut(&mut self, id: &K) -> Option<&mut T> {
-        let visible = self.records.get(id).is_some_and(|r| self.visible(id, r));
-        if visible {
-            self.records.get_mut(id)
-        } else {
-            None
-        }
+    pub fn get_mut<Q>(&mut self, id: &Q) -> Option<&mut T>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        let deleted = &self.deleted;
+        self.records.get_mut(id).filter(|r| Self::visible(deleted, id, r))
     }
 
     /// Deletes `id` as of `clock`.
@@ -110,13 +131,23 @@ impl<K: Ord + Clone, T: Record, P: DeletePolicy> RecordSet<K, T, P> {
         }
     }
 
-    pub fn is_deleted(&self, id: &K) -> bool {
+    pub fn is_deleted<Q>(&self, id: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         self.deleted.contains_key(id) && self.get(id).is_none()
     }
 
     /// The records that are not deleted, by id.
     pub fn iter(&self) -> impl Iterator<Item = (&K, &T)> {
-        self.records.iter().filter(|(id, r)| self.visible(id, r))
+        self.records.iter().filter(|(id, r)| Self::visible(&self.deleted, *id, r))
+    }
+
+    /// The records that are not deleted, by id, for editing.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&K, &mut T)> {
+        let deleted = &self.deleted;
+        self.records.iter_mut().filter(move |(id, r)| Self::visible(deleted, *id, r))
     }
 
     pub fn len(&self) -> usize {
@@ -125,6 +156,30 @@ impl<K: Ord + Clone, T: Record, P: DeletePolicy> RecordSet<K, T, P> {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// The newest clock anywhere in the set, deleted records included: what
+    /// a device's clock should [observe](crate::HlcClock::observe) after
+    /// loading or merging it.
+    pub fn latest_clock(&self) -> Option<T::Clock> {
+        let edits = self.records.values().filter_map(Record::last_edit);
+        edits.chain(self.deleted.values().cloned()).max()
+    }
+}
+
+impl<K: Zeroize, T: Record + Zeroize, P> Zeroize for RecordSet<K, T, P>
+where
+    T::Clock: Zeroize,
+{
+    fn zeroize(&mut self) {
+        for (mut id, mut record) in std::mem::take(&mut self.records) {
+            id.zeroize();
+            record.zeroize();
+        }
+        for (mut id, mut clock) in std::mem::take(&mut self.deleted) {
+            id.zeroize();
+            clock.zeroize();
+        }
     }
 }
 

@@ -553,7 +553,7 @@ fn list_entries(state: State<'_, VaultState>) -> Result<Vec<Entry>, String> {
     let s = state.lock().unwrap();
     s.data
         .as_ref()
-        .map(|d| d.entries.clone())
+        .map(VaultData::entry_views)
         .ok_or("Vault is locked".into())
 }
 
@@ -601,7 +601,7 @@ fn list_folders(state: State<'_, VaultState>) -> Result<Vec<Folder>, String> {
     let s = state.lock().unwrap();
     s.data
         .as_ref()
-        .map(|d| d.folders.clone())
+        .map(VaultData::folder_views)
         .ok_or("Vault is locked".into())
 }
 
@@ -1518,6 +1518,10 @@ pub fn run() {
             stop_sync,
         ])
         .setup(|app| {
+            // The device id lives with the app's own data, never in the
+            // sync folder the vault may move to
+            vault::set_device_dir(&app.path().app_data_dir()?);
+
             // On mobile, store the vault inside the app sandbox
             // (iOS: <container>/Library/Application Support). Desktop keeps
             // its historical location so existing vaults still load.
