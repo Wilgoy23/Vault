@@ -1,0 +1,25 @@
+[package]
+name = "folder-crdt-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+folder-crdt = { path = ".." }
+serde_json = "1"
+zeroize = "1"
+
+# Kept out of the app's workspace: cargo-fuzz builds it on nightly.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "decode"
+path = "fuzz_targets/decode.rs"
+test = false
+doc = false
+bench = false

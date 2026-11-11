@@ -10,8 +10,10 @@
 //! The app never sees these types directly. It edits through the methods on
 //! [`VaultData`] and shows [`EntryView`] and [`FolderView`], which keep the
 //! flat shape entries had in schema 1, so the UI didn't change. Schema 1
-//! files are read and converted by [`legacy`].
+//! files are read and converted by [`legacy`]; [`file`] reads and writes
+//! `vault.enc` in every layout.
 
+pub mod file;
 pub mod legacy;
 
 use std::fmt;

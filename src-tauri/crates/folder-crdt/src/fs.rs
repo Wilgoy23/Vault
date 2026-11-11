@@ -37,7 +37,7 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
     let mut attempt = 0;
     loop {
         match fs::rename(&tmp, path) {
-            Ok(()) => return Ok(()),
+            Ok(()) => return sync_dir(path),
             Err(_) if attempt < 4 => {
                 attempt += 1;
                 std::thread::sleep(std::time::Duration::from_millis(150));
@@ -45,6 +45,19 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
             Err(e) => return Err(e),
         }
     }
+}
+
+/// Makes a rename in `path`'s directory durable. Windows has no directory
+/// handles to sync; its renames are journaled.
+fn sync_dir(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
+        fs::File::open(dir)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
 }
 
 /// This installation's device id, kept in `dir/device-id`; created on first
@@ -80,13 +93,14 @@ pub fn random_device_id() -> io::Result<crate::DeviceId> {
 /// devices changed it at once: "vault (Will's conflicted copy).enc"
 /// (Dropbox), "vault-LAPTOP.enc" (OneDrive), "vault.sync-conflict-….enc"
 /// (Syncthing), "vault 2.enc" (iCloud), for a stem of "vault" and an
-/// extension of "enc". Exported backups, named "<stem>-backup…", are left
-/// alone. Names are compared case-insensitively.
-pub fn conflict_copies(dir: &Path, stem: &str, ext: &str) -> Vec<PathBuf> {
+/// extension of "enc". Files whose names start with one of `skip`, such as
+/// exported backups named "vault-backup…", are left alone. Names are
+/// compared case-insensitively.
+pub fn conflict_copies(dir: &Path, stem: &str, ext: &str, skip: &[&str]) -> Vec<PathBuf> {
     let stem = stem.to_ascii_lowercase();
     let main = format!("{stem}.{}", ext.to_ascii_lowercase());
     let suffix = format!(".{}", ext.to_ascii_lowercase());
-    let backup = format!("{stem}-backup");
+    let skip: Vec<String> = skip.iter().map(|s| s.to_ascii_lowercase()).collect();
 
     let Ok(read) = fs::read_dir(dir) else { return Vec::new() };
     read.filter_map(|e| e.ok())
@@ -98,7 +112,7 @@ pub fn conflict_copies(dir: &Path, stem: &str, ext: &str) -> Vec<PathBuf> {
                 && name != main
                 && name.starts_with(&stem)
                 && name.ends_with(&suffix)
-                && !name.starts_with(&backup)
+                && !skip.iter().any(|s| name.starts_with(s.as_str()))
         })
         .collect()
 }
@@ -156,7 +170,7 @@ mod tests {
         }
         fs::create_dir_all(dir.join("vault 4.enc")).unwrap();
 
-        let mut found: Vec<String> = conflict_copies(&dir, "vault", "enc")
+        let mut found: Vec<String> = conflict_copies(&dir, "vault", "enc", &["vault-backup"])
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();

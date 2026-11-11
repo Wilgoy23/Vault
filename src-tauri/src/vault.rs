@@ -1,63 +1,25 @@
+use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
-use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use crate::crypto;
+use crate::crypto::{self, KdfParams};
 
-// The records, their edits and their merge live in the folder-crdt crate.
-// The app shows entries and folders in their flat form, re-exported here
-// under the names the rest of the app uses.
+// The records, their edits and their merge live in the folder-crdt crate,
+// and so does reading and writing the file and keeping it in step with
+// other devices. The app shows entries and folders in their flat form,
+// re-exported here under the names the rest of the app uses.
 pub use folder_crdt::vault::{EntryView as Entry, FolderView as Folder, VaultData};
-use folder_crdt::format::{FormatError, Header};
-use folder_crdt::vault::{canonical, legacy, Fields, APP, SCHEMA};
-use folder_crdt::{Hlc, HlcClock, Merge};
-
-/// The format version written by this build: the schema of the encrypted
-/// data. 0 (headerless) and 1 stored entries flat and are converted on load;
-/// 2 stores every field with its own clock. Builds before 2 refuse a file
-/// by this number alone, so it stays even though the header repeats it.
-const CURRENT_VERSION: u32 = SCHEMA;
-
-/// On-disk vault file format.
-#[derive(Debug, Serialize, Deserialize)]
-struct VaultFile {
-    #[serde(default)]
-    version: u32,
-    /// folder-crdt's header: magic, its own format, app and schema. Absent
-    /// before version 2.
-    #[serde(flatten, default)]
-    header: Option<Header>,
-    /// Argon2id cost this file's key was derived with. Missing in v0 files,
-    /// which all used the values now in `crypto::DEFAULT_KDF`.
-    #[serde(default)]
-    kdf: crypto::KdfParams,
-    /// Base64-encoded Argon2id salt
-    salt: String,
-    /// Base64(nonce || AES-GCM ciphertext) of the JSON vault data
-    ciphertext: String,
-}
-
-impl VaultFile {
-    /// A fresh header at the current version and cost.
-    fn new(salt: &[u8], ciphertext: String) -> Self {
-        VaultFile {
-            version: CURRENT_VERSION,
-            header: Some(Header::new(APP, SCHEMA)),
-            kdf: crypto::DEFAULT_KDF,
-            salt: base64::engine::general_purpose::STANDARD.encode(salt),
-            ciphertext,
-        }
-    }
-
-    fn salt_bytes(&self) -> Result<Vec<u8>, String> {
-        base64::engine::general_purpose::STANDARD
-            .decode(&self.salt)
-            .map_err(|e| e.to_string())
-    }
-}
+use folder_crdt::codec::{read_params, Envelope};
+use folder_crdt::format::FormatError;
+use folder_crdt::vault::file::{self as vault_file, FileCodec};
+use folder_crdt::vault::Fields;
+use folder_crdt::{Cipher, FolderStore, Hlc, HlcClock, KeyMismatch, Merge, Store, StoreError};
 
 /// On mobile, the vault directory is set at startup from Tauri's
 /// app-data path (the iOS/Android app sandbox). Desktop keeps the
@@ -99,7 +61,7 @@ fn vault_path() -> Result<PathBuf, String> {
 
 /// This device's clock. Every edit is stamped from it, and it observes every
 /// vault loaded or merged, so an edit always sorts after what it was made on.
-static CLOCK: std::sync::Mutex<Option<HlcClock>> = std::sync::Mutex::new(None);
+static CLOCK: Mutex<Option<HlcClock>> = Mutex::new(None);
 
 /// Loads this device's id from `dir`, creating it on first run. `dir` must
 /// be the app's local data folder, never the sync folder: the id tells
@@ -132,18 +94,78 @@ fn observe(data: &VaultData) {
     }
 }
 
-/// The vault file exactly as this process last read or wrote it. When the
-/// file on disk no longer matches, another device (through a sync client)
-/// has written to it, and its changes are merged in before ours go out.
-/// Ciphertext only, so nothing here needs zeroizing.
-static LAST_SEEN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+// ── The file ──────────────────────────────────────────────────────────────────
 
-fn remember(raw: &str) {
-    *LAST_SEEN.lock().unwrap() = Some(raw.to_owned());
+/// Vault's encryption, handed to folder-crdt: AES-256-GCM under the key
+/// derived from the master password. The Argon2id salt and cost it was
+/// derived with are stored in cleartext beside the ciphertext, so the key
+/// can be derived again.
+pub struct VaultCipher {
+    key: Zeroizing<[u8; 32]>,
+    kdf: KdfParams,
+    salt: Vec<u8>,
 }
 
-fn changed_since_seen(raw: &str) -> bool {
-    LAST_SEEN.lock().unwrap().as_deref() != Some(raw)
+impl VaultCipher {
+    fn new(key: &[u8; 32], kdf: KdfParams, salt: Vec<u8>) -> Self {
+        VaultCipher { key: Zeroizing::new(*key), kdf, salt }
+    }
+
+    /// A new salt and key for `password`, at the current cost.
+    fn fresh(password: &str) -> Result<Self, String> {
+        let salt = crypto::generate_salt();
+        let key = crypto::derive_key(password, &salt)?;
+        Ok(VaultCipher::new(&key, crypto::DEFAULT_KDF, salt.to_vec()))
+    }
+
+    /// The key for the file `bytes`, derived from `password` with the salt
+    /// and cost the file was written with, not the current defaults, or
+    /// raising the cost would lock users out.
+    fn for_file(password: &str, bytes: &[u8]) -> Result<Self, String> {
+        let (kdf, salt) = file_params(bytes)?;
+        let key = crypto::derive_key_with(password, &salt, kdf)?;
+        Ok(VaultCipher::new(&key, kdf, salt))
+    }
+}
+
+impl Cipher for VaultCipher {
+    fn params(&self) -> Map<String, Value> {
+        let mut params = Map::new();
+        params.insert("kdf".into(), serde_json::to_value(self.kdf).unwrap_or_default());
+        params.insert("salt".into(), B64.encode(&self.salt).into());
+        params
+    }
+
+    fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>, StoreError> {
+        crypto::seal(plaintext, &self.key).map_err(|e| StoreError::Io(io::Error::other(e)))
+    }
+
+    fn open(&self, sealed: &[u8]) -> Result<Zeroizing<Vec<u8>>, KeyMismatch> {
+        crypto::open(sealed, &self.key).map_err(|_| KeyMismatch)
+    }
+}
+
+/// The Argon2id cost and salt in a vault file's cleartext. Files from before
+/// the cost was stored all used the values now in `crypto::DEFAULT_KDF`.
+fn file_params(bytes: &[u8]) -> Result<(KdfParams, Vec<u8>), String> {
+    let params = read_params(bytes).map_err(describe)?;
+    let kdf = match params.get("kdf") {
+        Some(kdf) => serde_json::from_value(kdf.clone()).map_err(|e| format!("Failed to parse vault: {e}"))?,
+        None => crypto::DEFAULT_KDF,
+    };
+    let salt = params
+        .get("salt")
+        .and_then(Value::as_str)
+        .and_then(|s| B64.decode(s).ok())
+        .ok_or("Failed to parse vault: no salt")?;
+    Ok((kdf, salt))
+}
+
+/// Reads a vault file and checks it is a layout this build can open.
+fn read_vault_file(path: &Path) -> Result<Vec<u8>, String> {
+    let bytes = fs::read(path).map_err(|_| "Vault file not found".to_string())?;
+    vault_file::check(&bytes).map_err(describe)?;
+    Ok(bytes)
 }
 
 /// What `save_vault` and `sync` report when the file on disk no longer opens
@@ -151,10 +173,75 @@ fn changed_since_seen(raw: &str) -> bool {
 pub const KEY_CHANGED: &str =
     "The master password was changed on another device. Unlock Vault with the new password.";
 
-/// Writes the vault file atomically (temp file, fsync, rename), so a crash
+/// The message the user sees for a store error.
+fn describe(e: StoreError) -> String {
+    match e {
+        StoreError::KeyMismatch => KEY_CHANGED.into(),
+        StoreError::Format(FormatError::Newer { schema, .. }) => format!(
+            "This vault was written by a newer version of Vault (format {schema}). Update Vault to open it."
+        ),
+        StoreError::Format(e) => format!("This is not a Vault file: {e}"),
+        StoreError::Corrupt(why) => format!("Failed to parse vault: {why}"),
+        StoreError::Io(e) if e.kind() == io::ErrorKind::NotFound => "Vault file not found".into(),
+        StoreError::Io(e) => e.to_string(),
+    }
+}
+
+/// Like `describe`, for opening a vault, where a key that doesn't fit means
+/// a wrong password.
+fn describe_unlock(e: StoreError) -> String {
+    match e {
+        StoreError::KeyMismatch => crypto::WRONG_KEY.into(),
+        e => describe(e),
+    }
+}
+
+type VaultStore = FolderStore<FileCodec<VaultCipher>>;
+
+/// The vault file, with the bytes this process last read or wrote of it.
+/// When the file no longer matches them, another device (through a sync
+/// client) has written to it, and its changes are merged in before ours go
+/// out. Replaced on every unlock.
+static STORE: Mutex<Option<VaultStore>> = Mutex::new(None);
+
+/// Opens the vault in the vault folder with `cipher`, and makes it the
+/// store later saves go through.
+fn open_store(cipher: VaultCipher) -> Result<VaultData, String> {
+    let mut store = vault_file::store(vault_dir()?, cipher);
+    let data = store.load().map_err(describe_unlock)?;
+    observe(&data);
+    *STORE.lock().unwrap() = Some(store);
+    Ok(data)
+}
+
+/// Runs `f` on the store for the vault folder, under `key`. Rebuilt when the
+/// folder or key changed since the last unlock: the vault was moved, or a
+/// test is playing another device.
+fn with_store<R>(key: &[u8; 32], f: impl FnOnce(&mut VaultStore) -> Result<R, StoreError>) -> Result<R, String> {
+    let dir = vault_dir()?;
+    let mut guard = STORE.lock().unwrap();
+    let current = guard
+        .as_ref()
+        .is_some_and(|s| s.dir() == dir && *s.codec().cipher().key == *key);
+    if !current {
+        // This key was derived with the salt and cost in the file
+        let (kdf, salt) = file_params(&read_vault_file(&dir.join("vault.enc"))?)?;
+        let codec = FileCodec::new(VaultCipher::new(key, kdf, salt));
+        match guard.as_mut() {
+            Some(store) if store.dir() == dir => store.set_codec(codec),
+            _ => *guard = Some(FolderStore::new(dir, "vault", "enc", codec)),
+        }
+        // A key that differs from the last one must open the file before
+        // anything is written with it
+        guard.as_mut().unwrap().forget();
+    }
+    f(guard.as_mut().unwrap()).map_err(describe)
+}
+
+/// Writes `contents` atomically (temp file, fsync, rename), so a crash
 /// mid-write can never corrupt the only copy of the vault.
-fn write_vault_file(path: &Path, contents: &str) -> Result<(), String> {
-    folder_crdt::fs::write_atomic(path, contents.as_bytes()).map_err(|e| e.to_string())
+fn write_vault_file(path: &Path, contents: &[u8]) -> Result<(), String> {
+    folder_crdt::fs::write_atomic(path, contents).map_err(|e| e.to_string())
 }
 
 /// Returns true if a vault file already exists on disk.
@@ -167,148 +254,61 @@ pub fn create_vault(master_password: &str) -> Result<(), String> {
     if vault_exists() {
         return Err("Vault already exists".into());
     }
-
-    let salt = crypto::generate_salt();
-    let key = crypto::derive_key(master_password, &salt)?;
-
-    let data = VaultData::default();
-    let json = Zeroizing::new(serde_json::to_vec(&data).map_err(|e| e.to_string())?);
-    let ciphertext = crypto::encrypt(&json, &key)?;
-
-    let file = VaultFile::new(&salt, ciphertext);
-
-    let path = vault_path()?;
-    fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
-
-    let json_file = serde_json::to_string(&file).map_err(|e| e.to_string())?;
-    write_vault_file(&path, &json_file)
+    let mut store = vault_file::store(vault_dir()?, VaultCipher::fresh(master_password)?);
+    store.create(&VaultData::default()).map_err(describe)
 }
 
-/// Reads the vault file and checks it is a format this build understands.
-/// Returns the raw text alongside the parsed header.
-fn read_vault_file() -> Result<(String, VaultFile), String> {
-    read_vault_file_at(&vault_path()?)
-}
-
-fn read_vault_file_at(path: &Path) -> Result<(String, VaultFile), String> {
-    let raw = fs::read_to_string(path)
-        .map_err(|_| "Vault file not found".to_string())?;
-    let file = parse_vault_file(&raw)?;
-    Ok((raw, file))
-}
-
-fn parse_vault_file(raw: &str) -> Result<VaultFile, String> {
-    let file: VaultFile = serde_json::from_str(raw).map_err(|e| e.to_string())?;
-
-    let newer = || {
-        format!(
-            "This vault was written by a newer version of Vault (format {}). Update Vault to open it.",
-            file.version
-        )
-    };
-    if file.version > CURRENT_VERSION {
-        return Err(newer());
-    }
-    match file.header.as_ref().map(|h| h.check(APP, SCHEMA)) {
-        None | Some(Ok(())) => Ok(file),
-        Some(Err(FormatError::Newer { .. })) => Err(newer()),
-        Some(Err(e)) => Err(format!("This is not a Vault file: {e}")),
-    }
-}
-
-/// Decrypts the vault, converting a version 0 or 1 vault to the current
-/// schema. The conversion is written back with the next save.
-fn parse_vault_data(file: &VaultFile, key: &[u8; 32]) -> Result<VaultData, String> {
-    let plaintext = crypto::decrypt(&file.ciphertext, key)?;
-    let parse_error = |e: serde_json::Error| format!("Failed to parse vault: {e}");
-    let data = if file.version < SCHEMA {
-        let old: legacy::VaultData = serde_json::from_slice(&plaintext).map_err(parse_error)?;
-        legacy::migrate(&old)
-    } else {
-        serde_json::from_slice(&plaintext).map_err(parse_error)?
-    };
-    observe(&data);
-    Ok(data)
-}
-
-/// Loads and decrypts the vault. Returns the key (held in app state) and the data.
+/// Loads and decrypts the vault. Returns the key (held in app state) and the
+/// data. A vault from before schema 2 is converted, and written in the
+/// current layout with the next save.
 pub fn unlock_vault(master_password: &str) -> Result<(Zeroizing<[u8; 32]>, VaultData), String> {
-    let (raw, file) = read_vault_file()?;
-
-    // Always derive with the parameters the file was written with, not the
-    // current defaults, or raising the cost would lock users out.
-    let key = crypto::derive_key_with(master_password, &file.salt_bytes()?, file.kdf)?;
-
-    let data = parse_vault_data(&file, &key)?;
-    remember(&raw);
-    Ok((key, data))
+    let bytes = read_vault_file(&vault_path()?)?;
+    let cipher = VaultCipher::for_file(master_password, &bytes)?;
+    let key = cipher.key.clone();
+    Ok((key, open_store(cipher)?))
 }
 
 /// Opens the vault with a key already in hand, for quick unlock, where the
 /// key was kept (wrapped) from an earlier master-password unlock rather than
 /// derived again. Fails if the vault file has been replaced since.
 pub fn unlock_with_key(key: &[u8; 32]) -> Result<VaultData, String> {
-    let (raw, file) = read_vault_file()?;
-    let data = parse_vault_data(&file, key)?;
-    remember(&raw);
-    Ok(data)
+    let (kdf, salt) = file_params(&read_vault_file(&vault_path()?)?)?;
+    open_store(VaultCipher::new(key, kdf, salt))
 }
 
 /// Re-encrypts the vault under a new master password. Verifies the current
-/// password against the on-disk file first, then generates a fresh salt and
-/// key and rewrites the vault atomically. Returns the new session key.
+/// password against the on-disk file first, merging in anything another
+/// device wrote, then generates a fresh salt and key and rewrites the vault
+/// atomically. Returns the new session key.
 pub fn change_master_password(
     current_password: &str,
     new_password: &str,
     data: &mut VaultData,
 ) -> Result<Zeroizing<[u8; 32]>, String> {
-    let path = vault_path()?;
-    let (raw, file) = read_vault_file_at(&path)?;
-
-    let current_key = crypto::derive_key_with(current_password, &file.salt_bytes()?, file.kdf)?;
-    let on_disk = parse_vault_data(&file, &current_key)
-        .map_err(|_| "Current password is incorrect".to_string())?;
-    // Another device may have written since; those changes must make it into
-    // the re-keyed file rather than be overwritten by it.
-    if changed_since_seen(&raw) {
-        data.merge(on_disk);
-    }
+    let bytes = read_vault_file(&vault_path()?)?;
+    let mut store = vault_file::store(vault_dir()?, VaultCipher::for_file(current_password, &bytes)?);
+    let on_disk = store.load().map_err(|_| "Current password is incorrect".to_string())?;
+    data.merge(on_disk);
+    observe(data);
 
     // A new password means a new key, so this is the one moment the vault can
-    // move to the current format and cost without knowing the old password twice.
-    let new_salt = crypto::generate_salt();
-    let new_key = crypto::derive_key(new_password, &new_salt)?;
-
-    let json = Zeroizing::new(serde_json::to_vec(data).map_err(|e| e.to_string())?);
-    let ciphertext = crypto::encrypt(&json, &new_key)?;
-
-    let updated = VaultFile::new(&new_salt, ciphertext);
-
-    let out = serde_json::to_string(&updated).map_err(|e| e.to_string())?;
-    write_vault_file(&path, &out)?;
-    remember(&out);
-    Ok(new_key)
+    // move to the current cost without knowing the old password twice.
+    let cipher = VaultCipher::fresh(new_password)?;
+    let key = cipher.key.clone();
+    store.set_codec(FileCodec::new(cipher));
+    store.save(data).map_err(describe)?;
+    *STORE.lock().unwrap() = Some(store);
+    Ok(key)
 }
 
-/// Encrypts `data` under `key` and writes it to `path`, keeping the salt and
-/// cost from `header`: the key in hand was derived from them, and re-deriving
-/// needs the master password. Changing the master password is what moves a
-/// vault to the current parameters.
-fn write_data(path: &Path, header: &VaultFile, key: &[u8; 32], data: &VaultData) -> Result<(), String> {
-    let json = Zeroizing::new(serde_json::to_vec(data).map_err(|e| e.to_string())?);
-    let ciphertext = crypto::encrypt(&json, key)?;
-
-    let updated = VaultFile {
-        version: CURRENT_VERSION,
-        header: Some(Header::new(APP, SCHEMA)),
-        kdf: header.kdf,
-        salt: header.salt.clone(),
-        ciphertext,
-    };
-
-    let out = serde_json::to_string(&updated).map_err(|e| e.to_string())?;
-    write_vault_file(path, &out)?;
-    remember(&out);
+/// Encrypts and writes VaultData back to disk using the current session key.
+/// If another device has written to the file since this one last read it,
+/// its changes are merged into `data` first, so neither side's edits are
+/// lost. A file this key can't open is never overwritten: that is a password
+/// change made elsewhere, and writing would undo it.
+pub fn save_vault(key: &[u8; 32], data: &mut VaultData) -> Result<(), String> {
+    with_store(key, |store| store.save(data))?;
+    observe(data);
 
     // Every entry and folder change comes through here
     #[cfg(target_os = "ios")]
@@ -316,30 +316,13 @@ fn write_data(path: &Path, header: &VaultFile, key: &[u8; 32], data: &VaultData)
     Ok(())
 }
 
-/// Encrypts and writes VaultData back to disk using the current session key.
-/// If another device has written to the file since this one last read it,
-/// its changes are merged into `data` first, so neither side's edits are lost.
-pub fn save_vault(key: &[u8; 32], data: &mut VaultData) -> Result<(), String> {
-    let path = vault_path()?;
-    let (raw, file) = read_vault_file_at(&path)?;
-
-    if changed_since_seen(&raw) {
-        // Never overwrite a file this key can't read: that is a password
-        // change made elsewhere, and writing would undo it.
-        let theirs = parse_vault_data(&file, key).map_err(|_| KEY_CHANGED.to_string())?;
-        data.merge(theirs);
-    }
-
-    write_data(&path, &file, key, data)
-}
-
 // ── Sync ──────────────────────────────────────────────────────────────────────
 //
 // Syncing is left to whatever already syncs a folder (OneDrive, Dropbox,
 // iCloud Drive, Syncthing): the vault file simply lives in that folder. Those
 // tools only move whole files, so two devices editing offline produce two
-// versions of it. Vault reconciles them here, entry by entry, so both
-// devices' edits survive. The sync tool only ever sees ciphertext.
+// versions of it. folder-crdt's FolderStore reconciles them, field by field,
+// so both devices' edits survive. The sync tool only ever sees ciphertext.
 
 /// Brings `data` up to date with the vault file, merging in anything another
 /// device wrote and any conflict copies a sync client left beside it, then
@@ -347,53 +330,20 @@ pub fn save_vault(key: &[u8; 32], data: &mut VaultData) -> Result<(), String> {
 /// deleted once merged; ones this key can't open are left where they are.
 /// Returns true if `data` changed, so the UI knows to reload.
 pub fn sync(key: &[u8; 32], data: &mut VaultData) -> Result<bool, String> {
-    let path = vault_path()?;
     // Missing for a moment while a sync client swaps the file; try next time
-    let Ok((raw, file)) = read_vault_file_at(&path) else { return Ok(false) };
-
-    let remote_changed = changed_since_seen(&raw);
-    let dir = path.parent().unwrap_or(Path::new("."));
-    let conflicts = folder_crdt::fs::conflict_copies(dir, "vault", "enc");
-    if !remote_changed && conflicts.is_empty() {
+    if !vault_exists() {
         return Ok(false);
     }
-
-    let before = canonical(data);
-    // What the file holds now, to decide whether it needs rewriting. When it
-    // is unchanged since we wrote it, that is `data` as it stood then.
-    let on_disk = if remote_changed {
-        let theirs = parse_vault_data(&file, key).map_err(|_| KEY_CHANGED.to_string())?;
-        let on_disk = canonical(&theirs);
-        data.merge(theirs);
-        on_disk
-    } else {
-        before.clone()
-    };
-
-    let mut merged = Vec::new();
-    for copy in conflicts {
-        let theirs = fs::read_to_string(&copy)
-            .ok()
-            .and_then(|raw| parse_vault_file(&raw).ok())
-            .and_then(|f| parse_vault_data(&f, key).ok());
-        if let Some(theirs) = theirs {
-            data.merge(theirs);
-            merged.push(copy);
-        }
+    let outcome = with_store(key, |store| store.sync(data))?;
+    observe(data);
+    for (copy, e) in &outcome.unreadable {
+        eprintln!("Left conflict copy {} unmerged: {e}", copy.display());
     }
-
-    let after = canonical(data);
-    if *after != *on_disk || !merged.is_empty() {
-        write_data(&path, &file, key, data)?;
-    } else {
-        // Already in step: just note that this version has been seen
-        remember(&raw);
+    #[cfg(target_os = "ios")]
+    if outcome.wrote {
+        crate::autofill::refresh(data);
     }
-    // Only now that their contents are safely in the main file
-    for copy in merged {
-        let _ = fs::remove_file(copy);
-    }
-    Ok(*after != *before)
+    Ok(outcome.changed)
 }
 
 /// Moves the vault file into `dir` (a folder a sync client watches) and
@@ -410,7 +360,7 @@ pub fn move_vault_to(dir: &Path) -> Result<(), String> {
     if dest.exists() {
         return Err("This folder already contains a vault".into());
     }
-    let raw = fs::read_to_string(&src).map_err(|_| "Vault file not found".to_string())?;
+    let raw = fs::read(&src).map_err(|_| "Vault file not found".to_string())?;
     fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     write_vault_file(&dest, &raw)?;
     set_vault_dir(dir.to_path_buf());
@@ -431,13 +381,19 @@ pub fn join_vault_in(
 ) -> Result<Zeroizing<[u8; 32]>, String> {
     let src = vault_path()?;
     let dest = dir.join("vault.enc");
-    let (_, file) = read_vault_file_at(&dest)?;
-    let key = crypto::derive_key_with(password, &file.salt_bytes()?, file.kdf)?;
-    let theirs = parse_vault_data(&file, &key)
-        .map_err(|_| "That password doesn't open the vault in this folder".to_string())?;
+    let bytes = read_vault_file(&dest)?;
+    let cipher = VaultCipher::for_file(password, &bytes)?;
+    let key = cipher.key.clone();
+    let mut store = vault_file::store(dir, cipher);
+    let theirs = store.load().map_err(|e| match e {
+        StoreError::KeyMismatch => "That password doesn't open the vault in this folder".to_string(),
+        e => describe(e),
+    })?;
 
     data.merge(theirs);
-    write_data(&dest, &file, &key, data)?;
+    observe(data);
+    store.save(data).map_err(describe)?;
+    *STORE.lock().unwrap() = Some(store);
     set_vault_dir(dir.to_path_buf());
     if src != dest {
         let _ = fs::rename(&src, src.with_file_name("vault.enc.pre-sync"));
@@ -453,7 +409,7 @@ pub fn open_vault_in(dir: &Path) -> Result<(), String> {
     if !dest.exists() {
         return Err("There is no vault.enc in that folder".into());
     }
-    read_vault_file_at(&dest)?;
+    read_vault_file(&dest)?;
     set_vault_dir(dir.to_path_buf());
     Ok(())
 }
@@ -467,7 +423,7 @@ pub fn move_vault_home(home: &Path) -> Result<(), String> {
     if src == dest {
         return Ok(());
     }
-    let raw = fs::read_to_string(&src).map_err(|_| "Vault file not found".to_string())?;
+    let raw = fs::read(&src).map_err(|_| "Vault file not found".to_string())?;
     fs::create_dir_all(home).map_err(|e| e.to_string())?;
     write_vault_file(&dest, &raw)?;
     set_vault_dir(home.to_path_buf());
@@ -606,22 +562,23 @@ pub fn export_vault(dest_path: &Path) -> Result<(), String> {
 /// the existing vault to vault.enc.bak before overwriting, so a bad import
 /// (or one whose password the user has forgotten) is recoverable.
 pub fn import_vault(src_path: &Path) -> Result<(), String> {
-    let raw = fs::read_to_string(src_path)
-        .map_err(|_| "Cannot read the selected file".to_string())?;
-    let file: VaultFile = serde_json::from_str(&raw)
-        .map_err(|_| "Selected file is not a valid vault backup".to_string())?;
+    let raw = fs::read(src_path).map_err(|_| "Cannot read the selected file".to_string())?;
+    let invalid = || "Selected file is not a valid vault backup".to_string();
+    let envelope = Envelope::parse(&raw).map_err(|_| invalid())?;
 
     // Shape checks beyond JSON: salt must be a 32-byte base64 value and the
     // ciphertext must at least hold a 12-byte nonce plus a 16-byte GCM tag.
-    let salt = base64::engine::general_purpose::STANDARD
-        .decode(&file.salt)
-        .map_err(|_| "Selected file is not a valid vault backup".to_string())?;
-    let ciphertext = base64::engine::general_purpose::STANDARD
-        .decode(&file.ciphertext)
-        .map_err(|_| "Selected file is not a valid vault backup".to_string())?;
-    if salt.len() != 32 || ciphertext.len() < 12 + 16 {
-        return Err("Selected file is not a valid vault backup".into());
+    let salt = envelope
+        .params
+        .get("salt")
+        .and_then(Value::as_str)
+        .and_then(|s| B64.decode(s).ok())
+        .ok_or_else(invalid)?;
+    if salt.len() != 32 || envelope.payload.len() < 12 + 16 {
+        return Err(invalid());
     }
+    // A backup from a newer Vault would only fail at the next unlock
+    vault_file::check(&raw).map_err(describe)?;
 
     let dest = vault_path()?;
     fs::create_dir_all(dest.parent().unwrap()).map_err(|e| e.to_string())?;
@@ -637,7 +594,36 @@ pub fn import_vault(src_path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use folder_crdt::vault::MAX_PASSWORD_HISTORY;
+    use folder_crdt::format::Header;
+    use folder_crdt::vault::{APP, MAX_PASSWORD_HISTORY, SCHEMA};
+    use folder_crdt::Codec;
+    use serde::{Deserialize, Serialize};
+
+    const CURRENT_VERSION: u32 = SCHEMA;
+
+    /// The vault file's layout, to inspect and forge files.
+    #[derive(Debug, Serialize, Deserialize)]
+    struct VaultFile {
+        #[serde(default)]
+        version: u32,
+        #[serde(flatten, default)]
+        header: Option<Header>,
+        #[serde(default)]
+        kdf: KdfParams,
+        salt: String,
+        ciphertext: String,
+    }
+
+    fn read_file() -> VaultFile {
+        serde_json::from_slice(&fs::read(vault_path().unwrap()).unwrap()).unwrap()
+    }
+
+    /// Writes `data` at `path` as this device would, under `key`.
+    fn write_copy(path: &Path, key: &[u8; 32], data: &VaultData) {
+        let (kdf, salt) = file_params(&fs::read(vault_path().unwrap()).unwrap()).unwrap();
+        let bytes = FileCodec::new(VaultCipher::new(key, kdf, salt)).encode(data).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
     /// `VAULT_DIR` is a process-wide `OnceLock`, so every test in this binary
@@ -944,7 +930,7 @@ mod tests {
 
     /// What the vault file holds, decrypted.
     fn contents_on_disk(key: &[u8; 32]) -> (VaultFile, serde_json::Value) {
-        let (_, file) = read_vault_file().unwrap();
+        let file = read_file();
         let plaintext = crypto::decrypt(&file.ciphertext, key).unwrap();
         let contents = serde_json::from_slice(&plaintext).unwrap();
         (file, contents)
@@ -1007,7 +993,7 @@ mod tests {
             { "password": "pw1", "replaced_at": 300 },
             { "password": "pw2", "replaced_at": 400 }
         ]);
-        let (_, header) = read_vault_file().unwrap();
+        let header = read_file();
         let copy = serde_json::json!({
             "version": 1,
             "kdf": header.kdf,
@@ -1179,7 +1165,7 @@ mod tests {
         create_vault("password").unwrap();
         let (key, mut a) = unlock_vault("password").unwrap();
         sample_entry(&key, &mut a, "From A", "1");
-        let a_seen = LAST_SEEN.lock().unwrap().clone();
+        let a_seen = STORE.lock().unwrap().take();
 
         // Device B writes the main file through the sync client...
         let (_, mut b) = unlock_vault("password").unwrap();
@@ -1189,14 +1175,13 @@ mod tests {
         let (_, mut c) = unlock_vault("password").unwrap();
         c.add_entry("c".into(), fields("From C", "3"), now()).unwrap();
         let path = vault_path().unwrap();
-        let (_, header) = read_vault_file_at(&path).unwrap();
         let copy = path.with_file_name("vault (C's conflicted copy).enc");
-        write_data(&copy, &header, &key, &c).unwrap();
+        write_copy(&copy, &key, &c);
         let backup = path.with_file_name("vault-backup.enc");
         fs::write(&backup, "an export, not a conflict").unwrap();
 
         // Back on device A
-        *LAST_SEEN.lock().unwrap() = a_seen;
+        *STORE.lock().unwrap() = a_seen;
         assert!(sync(&key, &mut a).unwrap());
 
         let mut names: Vec<String> = a.entry_views().iter().map(|e| e.name.clone()).collect();
@@ -1216,12 +1201,12 @@ mod tests {
         let _g = vault_test();
         create_vault("password").unwrap();
         let (key, mut a) = unlock_vault("password").unwrap();
-        let a_seen = LAST_SEEN.lock().unwrap().clone();
+        let a_seen = STORE.lock().unwrap().take();
 
         let (_, mut b) = unlock_vault("password").unwrap();
         change_master_password("password", "changed-elsewhere", &mut b).unwrap();
 
-        *LAST_SEEN.lock().unwrap() = a_seen;
+        *STORE.lock().unwrap() = a_seen;
         let err = add_entry(
             &key, &mut a, "Late".into(), None, "a@b.com".into(), "pw".into(),
             None, None, None, None,
