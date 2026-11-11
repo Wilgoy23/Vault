@@ -1,0 +1,126 @@
+//! File handling for a store kept in a synced folder: writing without ever
+//! leaving a half-written file, and finding the extra copies sync clients
+//! leave behind when two devices change the file at once.
+
+use std::fs;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+
+/// Writes `contents` to `path` atomically: write to a temp file in the same
+/// directory, fsync, then rename over the target. A crash mid-write can
+/// never corrupt the only copy. The file is created owner-readable only
+/// (0600) on Unix.
+///
+/// The temp file is `path` with `.tmp` appended, so it never looks like a
+/// conflict copy to [`conflict_copies`].
+pub fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let mut tmp_name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?
+        .to_os_string();
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
+    {
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp)?;
+        f.write_all(contents)?;
+        f.sync_all()?;
+    }
+    // A sync client uploading the previous version can hold the file open
+    // for a moment, which makes the rename fail on Windows. Give it a few tries.
+    let mut attempt = 0;
+    loop {
+        match fs::rename(&tmp, path) {
+            Ok(()) => return Ok(()),
+            Err(_) if attempt < 4 => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(150));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// The extra copies sync clients leave beside `<stem>.<ext>` when two
+/// devices changed it at once: "vault (Will's conflicted copy).enc"
+/// (Dropbox), "vault-LAPTOP.enc" (OneDrive), "vault.sync-conflict-….enc"
+/// (Syncthing), "vault 2.enc" (iCloud), for a stem of "vault" and an
+/// extension of "enc". Exported backups, named "<stem>-backup…", are left
+/// alone. Names are compared case-insensitively.
+pub fn conflict_copies(dir: &Path, stem: &str, ext: &str) -> Vec<PathBuf> {
+    let stem = stem.to_ascii_lowercase();
+    let main = format!("{stem}.{}", ext.to_ascii_lowercase());
+    let suffix = format!(".{}", ext.to_ascii_lowercase());
+    let backup = format!("{stem}-backup");
+
+    let Ok(read) = fs::read_dir(dir) else { return Vec::new() };
+    read.filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            let Some(name) = p.file_name().and_then(|n| n.to_str()) else { return false };
+            let name = name.to_ascii_lowercase();
+            p.is_file()
+                && name != main
+                && name.starts_with(&stem)
+                && name.ends_with(&suffix)
+                && !name.starts_with(&backup)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join("folder_crdt_tests").join(name);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn write_atomic_replaces_the_file_and_leaves_no_temp_file() {
+        let dir = temp_dir("write_atomic");
+        let path = dir.join("vault.enc");
+        write_atomic(&path, b"first").unwrap();
+        write_atomic(&path, b"second").unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"second");
+        assert!(!dir.join("vault.enc.tmp").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn conflict_copies_finds_each_sync_clients_copies_and_nothing_else() {
+        let dir = temp_dir("conflict_copies");
+        let copies = [
+            "vault (Will's conflicted copy).enc",
+            "vault-LAPTOP.enc",
+            "vault.sync-conflict-20261110-120000-ABCDEFG.enc",
+            "vault 2.enc",
+            "VAULT 3.ENC",
+        ];
+        let others = ["vault.enc", "vault-backup.enc", "vault-backup 2.enc", "vault.enc.tmp", "notes.enc", "vault.txt"];
+        for name in copies.iter().chain(&others) {
+            fs::write(dir.join(name), "x").unwrap();
+        }
+        fs::create_dir_all(dir.join("vault 4.enc")).unwrap();
+
+        let mut found: Vec<String> = conflict_copies(&dir, "vault", "enc")
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        found.sort();
+        let mut expected: Vec<String> = copies.iter().map(|s| s.to_string()).collect();
+        expected.sort();
+        assert_eq!(found, expected);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

@@ -7,6 +7,11 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+# The app plus the crates it is built from. folder-crdt holds the sync code,
+# kept free of Tauri and Vault's crypto so other apps can use it.
+[workspace]
+members = ["crates/folder-crdt"]
+
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
@@ -22,6 +27,7 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+folder-crdt = { path = "crates/folder-crdt" }
 
 # Crypto
 aes-gcm = "0.10"
