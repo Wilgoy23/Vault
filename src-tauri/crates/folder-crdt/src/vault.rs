@@ -101,7 +101,7 @@ pub struct Entry {
 }
 
 /// The decrypted vault contents (serialized to JSON before encryption).
-#[derive(Debug, Default, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct VaultData {
     pub entries: Vec<Entry>,
     #[serde(default)]
@@ -240,6 +240,30 @@ pub fn canonical(data: &VaultData) -> Zeroizing<Vec<u8>> {
     c.folders.sort_by(|a, b| a.id.cmp(&b.id));
     c.deleted.sort_by(|a, b| a.id.cmp(&b.id));
     Zeroizing::new(serde_json::to_vec(&c).unwrap_or_default())
+}
+
+// The generic trait over the rules above, so the merge-law property tests
+// run against exactly what Vault ships.
+
+impl crate::Merge for VaultData {
+    fn merge(&mut self, other: Self) {
+        merge(self, other);
+    }
+}
+
+impl crate::Merge for Entry {
+    fn merge(&mut self, other: Self) {
+        merge_entry(self, other);
+    }
+}
+
+/// The rule `merge` applies to two copies of one folder.
+impl crate::Merge for Folder {
+    fn merge(&mut self, other: Self) {
+        if (other.updated_at, &other.name) > (self.updated_at, &self.name) {
+            *self = other;
+        }
+    }
 }
 
 #[cfg(test)]
