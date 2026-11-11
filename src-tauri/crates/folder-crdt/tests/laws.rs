@@ -168,25 +168,12 @@ proptest! {
 
 // ── RecordSet ─────────────────────────────────────────────────────────────────
 
-/// A small record of two field types.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// A small record of two field types. Tags don't count as edits.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, Merge, Record)]
+#[record(clock = u64)]
 struct Note {
     title: Lww<u8, u64>,
     tags: AddWinsSet<u8>,
-}
-
-impl Merge for Note {
-    fn merge(&mut self, other: Self) {
-        self.title.merge(other.title);
-        self.tags.merge(other.tags);
-    }
-}
-
-impl Record for Note {
-    type Clock = u64;
-    fn last_edit(&self) -> Option<u64> {
-        self.title.clock().copied()
-    }
 }
 
 #[derive(Debug, Clone)]

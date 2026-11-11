@@ -9,7 +9,8 @@ use folder_crdt::*;
 
 type Clock = u64;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Merge, Record)]
+#[record(clock = Clock)]
 struct Login {
     name: Lww<String, Clock>,
     url: Lww<Option<String>, Clock>,
@@ -17,23 +18,6 @@ struct Login {
     password: LwwHistory<String, Clock, 11>,
     uses: Counter,
     last_used: Max<Clock>,
-}
-
-impl Merge for Login {
-    fn merge(&mut self, other: Self) {
-        self.name.merge(other.name);
-        self.url.merge(other.url);
-        self.password.merge(other.password);
-        self.uses.merge(other.uses);
-        self.last_used.merge(other.last_used);
-    }
-}
-
-impl Record for Login {
-    type Clock = Clock;
-    fn last_edit(&self) -> Option<Clock> {
-        [self.name.clock(), self.url.clock(), self.password.clock()].into_iter().flatten().max().copied()
-    }
 }
 
 fn login(name: &str, password: &str, at: Clock) -> Login {

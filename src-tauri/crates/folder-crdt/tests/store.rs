@@ -16,41 +16,20 @@ use zeroize::Zeroizing;
 
 // ── A small app with two collections ──────────────────────────────────────
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Merge, Record)]
+#[record(clock = Hlc)]
 struct Item {
     title: Lww<String, Hlc>,
     #[serde(flatten)]
     extra: Unknown,
 }
 
-impl Merge for Item {
-    fn merge(&mut self, other: Self) {
-        self.title.merge(other.title.clone());
-        self.extra.merge(other.extra.clone());
-    }
-}
-
-impl Record for Item {
-    type Clock = Hlc;
-    fn last_edit(&self) -> Option<Hlc> {
-        self.title.clock().cloned()
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Merge)]
 struct Todo {
     lists: RecordSet<String, Item, DeleteWins>,
     tags: RecordSet<String, Item, EditRevives>,
     #[serde(flatten)]
     extra: Unknown,
-}
-
-impl Merge for Todo {
-    fn merge(&mut self, mut other: Self) {
-        self.lists.merge(std::mem::take(&mut other.lists));
-        self.tags.merge(std::mem::take(&mut other.tags));
-        self.extra.merge(std::mem::take(&mut other.extra));
-    }
 }
 
 fn item(title: &str, ms: u64, device: u64) -> Item {

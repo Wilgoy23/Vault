@@ -15,6 +15,7 @@ use zeroize::Zeroize;
 
 use crate::field::{Lww, Tag};
 use crate::merge::Merge;
+use crate::record_set::LastEdit;
 
 /// Identifies an item in a [`Sequence`]. Unique per insert, like a [`Tag`].
 pub type ItemId = Tag;
@@ -219,6 +220,14 @@ impl<T: Zeroize, C: Zeroize> Zeroize for Sequence<T, C> {
             item.zeroize();
         }
         self.removed.clear();
+    }
+}
+
+/// The newest write to any item's value or position. Removing an item
+/// carries no clock, so it doesn't count.
+impl<T: Ord, C: Ord + Clone> LastEdit<C> for Sequence<T, C> {
+    fn last_edit(&self) -> Option<C> {
+        self.items.values().flat_map(|i| [i.value.clock(), i.position.clock()]).flatten().max().cloned()
     }
 }
 

@@ -7,15 +7,87 @@ use std::marker::PhantomData;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
+use crate::field::{AddWinsSet, BoundedSet, Counter, Immutable, Lww, LwwHistory, Max};
 use crate::merge::Merge;
+use crate::Unknown;
 
 /// A record that can live in a [`RecordSet`]: anything that merges and can
 /// say when it was last edited, so a delete can be weighed against edits.
+///
+/// A struct of field types derives it, with [`Merge`]:
+///
+/// ```
+/// use folder_crdt::{Counter, Hlc, Lww, Merge, Record};
+///
+/// #[derive(Default, Merge, Record)]
+/// #[record(clock = Hlc)]
+/// struct Bookmark {
+///     title: Lww<String, Hlc>,
+///     // Opening a bookmark isn't an edit
+///     #[record(skip)]
+///     opened: Lww<u64, Hlc>,
+///     visits: Counter,
+/// }
+///
+/// let mut b = Bookmark::default();
+/// b.title.set("Docs".into(), Hlc::new(1_000, 0, 1));
+/// b.opened.set(5, Hlc::new(9_000, 0, 1));
+/// b.visits.increment(1, 1);
+/// assert_eq!(b.last_edit(), Some(Hlc::new(1_000, 0, 1)));
+/// ```
 pub trait Record: Merge {
     type Clock: Ord + Clone;
 
     /// The clock of the newest write to any field. `None` if never written.
     fn last_edit(&self) -> Option<Self::Clock>;
+}
+
+/// What a field contributes to its record's [`Record::last_edit`]:
+/// `#[derive(Record)]` takes the newest clock its fields report.
+///
+/// Registers report the clock of their current write. Types with no clock
+/// of their own, or whose changes aren't edits (counters, maxima, sets,
+/// immutable values, unknown fields), report `None` for every clock type.
+pub trait LastEdit<C> {
+    fn last_edit(&self) -> Option<C>;
+}
+
+impl<C, F: LastEdit<C>> LastEdit<C> for Option<F> {
+    fn last_edit(&self) -> Option<C> {
+        self.as_ref().and_then(F::last_edit)
+    }
+}
+
+impl<C: Ord + Clone, T: Ord> LastEdit<C> for Lww<T, C> {
+    fn last_edit(&self) -> Option<C> {
+        self.clock().cloned()
+    }
+}
+
+impl<C: Ord + Clone, T: Ord, const N: usize> LastEdit<C> for LwwHistory<T, C, N> {
+    fn last_edit(&self) -> Option<C> {
+        self.clock().cloned()
+    }
+}
+
+/// No clock: these report `None` whatever the record's clock is.
+macro_rules! unclocked {
+    ($([$($g:tt)*] $ty:ty;)*) => {$(
+        impl<C, $($g)*> LastEdit<C> for $ty {
+            fn last_edit(&self) -> Option<C> {
+                None
+            }
+        }
+    )*};
+}
+
+unclocked! {
+    [T] Max<T>;
+    [T] Immutable<T>;
+    [] Counter;
+    [T: Ord, const N: usize] BoundedSet<T, N>;
+    [T: Ord] AddWinsSet<T>;
+    [] Unknown;
 }
 
 /// What happens when one device deletes a record that another edited.

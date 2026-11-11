@@ -76,8 +76,11 @@ impl Zeroize for EntryKind {
 
 // ── Records ───────────────────────────────────────────────────────────────────
 
-/// A login, as stored and synced.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Zeroize)]
+/// A login, as stored and synced. Its last edit is the newest write to a
+/// register: copying a credential (`last_used`, `uses`) doesn't count, as it
+/// never has.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Zeroize, Merge, Record)]
+#[record(clock = Hlc)]
 pub struct Entry {
     pub kind: Immutable<EntryKind>,
     /// When the entry was made. Entries are listed in this order.
@@ -99,48 +102,9 @@ pub struct Entry {
     pub extra: Unknown,
 }
 
-impl Merge for Entry {
-    fn merge(&mut self, other: Self) {
-        self.kind.merge(other.kind);
-        self.created.merge(other.created);
-        self.name.merge(other.name);
-        self.username.merge(other.username);
-        self.email.merge(other.email);
-        self.password.merge(other.password);
-        self.url.merge(other.url);
-        self.notes.merge(other.notes);
-        self.folder_id.merge(other.folder_id);
-        self.totp_secret.merge(other.totp_secret);
-        self.last_used.merge(other.last_used);
-        self.uses.merge(other.uses);
-        self.extra.merge(other.extra);
-    }
-}
-
-impl Record for Entry {
-    type Clock = Hlc;
-
-    /// The newest edit. Copying a credential doesn't count, as it never has.
-    fn last_edit(&self) -> Option<Hlc> {
-        [
-            self.name.clock(),
-            self.username.clock(),
-            self.email.clock(),
-            self.password.clock(),
-            self.url.clock(),
-            self.notes.clock(),
-            self.folder_id.clock(),
-            self.totp_secret.clock(),
-        ]
-        .into_iter()
-        .flatten()
-        .max()
-        .copied()
-    }
-}
-
 /// A user-defined folder for grouping entries.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Zeroize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Zeroize, Merge, Record)]
+#[record(clock = Hlc)]
 pub struct Folder {
     /// When the folder was made. Folders are listed in this order.
     pub created: Immutable<Hlc>,
@@ -149,37 +113,13 @@ pub struct Folder {
     pub extra: Unknown,
 }
 
-impl Merge for Folder {
-    fn merge(&mut self, other: Self) {
-        self.created.merge(other.created);
-        self.name.merge(other.name);
-        self.extra.merge(other.extra);
-    }
-}
-
-impl Record for Folder {
-    type Clock = Hlc;
-
-    fn last_edit(&self) -> Option<Hlc> {
-        self.name.clock().copied()
-    }
-}
-
 /// The decrypted vault contents (serialized to JSON before encryption).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, Merge)]
 pub struct VaultData {
     pub entries: RecordSet<String, Entry, DeleteWins>,
     pub folders: RecordSet<String, Folder, DeleteWins>,
     #[serde(flatten)]
     pub extra: Unknown,
-}
-
-impl Merge for VaultData {
-    fn merge(&mut self, mut other: Self) {
-        Merge::merge(&mut self.entries, std::mem::take(&mut other.entries));
-        Merge::merge(&mut self.folders, std::mem::take(&mut other.folders));
-        self.extra.merge(std::mem::take(&mut other.extra));
-    }
 }
 
 /// `data` serialized, for telling whether a merge changed anything. Every

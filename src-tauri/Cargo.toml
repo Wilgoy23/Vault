@@ -10,7 +10,7 @@ edition = "2021"
 # The app plus the crates it is built from. folder-crdt holds the sync code,
 # kept free of Tauri and Vault's crypto so other apps can use it.
 [workspace]
-members = ["crates/folder-crdt"]
+members = ["crates/folder-crdt", "crates/folder-crdt-derive"]
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
