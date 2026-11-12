@@ -1,9 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc 7169896c889b4725a0b80f21779519e6756424f13ce018f3e4e3457a176111b0 # shrinks to base = [AddEntry { name: 0, pw: 0, dt: 0 }, AddEntry { name: 0, pw: 0, dt: 0 }, Delete { pick: 0, dt: 0 }, AddEntry { name: 0, pw: 0, dt: 0 }], a = [Use { pick: 0, dt: 0 }], b = [Delete { pick: 2, dt: 0 }], c = [AddEntry { name: 0, pw: 0, dt: 1 }, Edit { pick: 3, name: 0, notes: None, folder: None, dt: 0 }]
-cc f9117aeeb9e5a75f9d529137207b4b60729267f85039757f65cfb178c0578bf8 # shrinks to base = [AddEntry { name: 0, pw: 0, dt: 0 }], a = [Rotate { pick: 0, pw: 1, dt: 0 }, Rotate { pick: 0, pw: 0, dt: 0 }, Rotate { pick: 0, pw: 1, dt: 0 }], b = [], c = []
-cc 32418ba9084649f2799e88f682e5791cea6135679f33f60dcaca931b056386e7 # shrinks to base = [AddEntry { name: 0, pw: 2, dt: 0 }], a = [Use { pick: 0, dt: 1 }, Rotate { pick: 0, pw: 0, dt: 0 }], b = [], c = [Rotate { pick: 0, pw: 0, dt: 0 }]
