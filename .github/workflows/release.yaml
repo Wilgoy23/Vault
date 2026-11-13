@@ -91,3 +91,44 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+  # The unsigned iOS build (see ios.yml), run alongside the desktop builds.
+  resolve-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - id: tag
+        env:
+          TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+        run: |
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+  build-ios:
+    needs: resolve-tag
+    uses: ./.github/workflows/ios.yml
+    with:
+      version: ${{ needs.resolve-tag.outputs.version }}
+
+  # Waits for the desktop jobs because tauri-action creates the draft
+  # release. Still runs if one desktop platform failed, as long as the
+  # release exists and the iOS build succeeded.
+  upload-ios:
+    needs: [resolve-tag, build-tauri, build-ios]
+    if: ${{ !cancelled() && needs.build-ios.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Vault-ipa
+
+      - name: Attach .ipa to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve-tag.outputs.tag }}
+          VERSION: ${{ needs.resolve-tag.outputs.version }}
+        run: |
+          mv Vault.ipa "Vault_${VERSION}_iOS_unsigned.ipa"
+          gh release upload "$TAG" "Vault_${VERSION}_iOS_unsigned.ipa" --clobber --repo "$GITHUB_REPOSITORY"

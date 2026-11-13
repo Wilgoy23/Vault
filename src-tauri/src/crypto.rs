@@ -67,9 +67,9 @@ pub fn generate_salt() -> [u8; SALT_LEN] {
     salt
 }
 
-/// Encrypts plaintext with AES-256-GCM.
-/// Returns base64(nonce || ciphertext).
-pub fn encrypt(plaintext: &[u8], key: &[u8; KEY_LEN]) -> Result<String, String> {
+/// Encrypts plaintext with AES-256-GCM under a fresh random nonce.
+/// Returns nonce || ciphertext.
+pub fn seal(plaintext: &[u8], key: &[u8; KEY_LEN]) -> Result<Vec<u8>, String> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
 
@@ -77,20 +77,14 @@ pub fn encrypt(plaintext: &[u8], key: &[u8; KEY_LEN]) -> Result<String, String> 
         .encrypt(&nonce, plaintext)
         .map_err(|e| format!("Encryption failed: {e}"))?;
 
-    // Prepend nonce to ciphertext, then base64-encode the whole thing
     let mut combined = nonce.to_vec();
     combined.extend_from_slice(&ciphertext);
-
-    Ok(B64.encode(&combined))
+    Ok(combined)
 }
 
-/// Decrypts a base64(nonce || ciphertext) produced by `encrypt`.
-/// The plaintext is wrapped in `Zeroizing`, so it wipes itself when dropped.
-pub fn decrypt(encoded: &str, key: &[u8; KEY_LEN]) -> Result<Zeroizing<Vec<u8>>, String> {
-    let combined = B64
-        .decode(encoded)
-        .map_err(|e| format!("Base64 decode failed: {e}"))?;
-
+/// Decrypts nonce || ciphertext produced by `seal`. The plaintext is wrapped
+/// in `Zeroizing`, so it wipes itself when dropped.
+pub fn open(combined: &[u8], key: &[u8; KEY_LEN]) -> Result<Zeroizing<Vec<u8>>, String> {
     if combined.len() < 12 {
         return Err("Ciphertext too short".into());
     }
@@ -102,7 +96,23 @@ pub fn decrypt(encoded: &str, key: &[u8; KEY_LEN]) -> Result<Zeroizing<Vec<u8>>,
     cipher
         .decrypt(nonce, ciphertext)
         .map(Zeroizing::new)
-        .map_err(|_| "Decryption failed — wrong password or corrupted vault".into())
+        .map_err(|_| WRONG_KEY.into())
+}
+
+/// What a failed decryption reports.
+pub const WRONG_KEY: &str = "Decryption failed — wrong password or corrupted vault";
+
+/// `seal`, base64-encoded.
+pub fn encrypt(plaintext: &[u8], key: &[u8; KEY_LEN]) -> Result<String, String> {
+    Ok(B64.encode(seal(plaintext, key)?))
+}
+
+/// Decrypts a base64(nonce || ciphertext) produced by `encrypt`.
+pub fn decrypt(encoded: &str, key: &[u8; KEY_LEN]) -> Result<Zeroizing<Vec<u8>>, String> {
+    let combined = B64
+        .decode(encoded)
+        .map_err(|e| format!("Base64 decode failed: {e}"))?;
+    open(&combined, key)
 }
 
 #[cfg(test)]

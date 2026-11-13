@@ -1,151 +1,25 @@
+use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
-use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::fs;
-use std::io::Write;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use uuid::Uuid;
-use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+use zeroize::Zeroizing;
 
-use crate::crypto;
+use crate::crypto::{self, KdfParams};
 
-/// A user-defined folder for grouping entries.
-#[derive(Debug, Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
-pub struct Folder {
-    pub id: String,
-    pub name: String,
-    /// When the folder was created or last renamed (unix seconds), so a sync
-    /// merge can tell which device's name is newer. 0 on folders written
-    /// before this field existed.
-    #[serde(default)]
-    pub updated_at: u64,
-}
-
-/// Records that an entry or folder was deleted, so a sync merge doesn't bring
-/// it back from another device's copy that still has it. Ids are UUIDs, so
-/// entries and folders share one list.
-#[derive(Debug, Clone, Serialize, Deserialize, Zeroize)]
-pub struct Tombstone {
-    pub id: String,
-    /// Unix seconds
-    pub deleted_at: u64,
-}
-
-/// What a vault item represents. Only `Login` exists today; the field is
-/// here so secure notes and cards can be added later without a format
-/// change, and so vaults written now already carry it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum EntryKind {
-    #[default]
-    Login,
-}
-
-// Not secret, but `Entry` zeroizes every field on drop and so needs this.
-impl Zeroize for EntryKind {
-    fn zeroize(&mut self) {
-        *self = EntryKind::Login;
-    }
-}
-
-/// A password this entry used to have, kept so a bad rotation can be undone.
-#[derive(Debug, Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
-pub struct PastPassword {
-    pub password: String,
-    /// When this password was replaced (unix seconds)
-    pub replaced_at: u64,
-}
-
-/// How many superseded passwords to keep per entry. Old ones are dropped
-/// oldest-first so the vault cannot grow without bound.
-const MAX_PASSWORD_HISTORY: usize = 10;
-
-/// A single password entry. Zeroized on drop so plaintext secrets don't
-/// linger in freed memory (clones included).
-#[derive(Debug, Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
-pub struct Entry {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub kind: EntryKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub username: Option<String>,
-    /// May be empty: an entry needs either an email or a username, not both.
-    #[serde(default)]
-    pub email: String,
-    pub password: String,
-    pub url: Option<String>,
-    pub notes: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub folder_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub totp_secret: Option<String>,
-    pub created_at: u64,
-    pub updated_at: u64,
-    /// When the password itself last changed (unix seconds). `None` on
-    /// entries written before this field existed; the audit falls back to
-    /// `updated_at` for those.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub password_changed_at: Option<u64>,
-    /// Superseded passwords, oldest first.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub password_history: Vec<PastPassword>,
-    /// When a credential from this entry was last copied (unix seconds).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_used_at: Option<u64>,
-    /// How many times a credential from this entry has been copied.
-    #[serde(default)]
-    pub use_count: u64,
-}
-
-/// The decrypted vault contents (serialized to JSON before encryption).
-#[derive(Debug, Default, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
-pub struct VaultData {
-    pub entries: Vec<Entry>,
-    #[serde(default)]
-    pub folders: Vec<Folder>,
-    /// Deleted entry and folder ids. Kept indefinitely: each is a few dozen
-    /// bytes, and pruning one would let a long-offline device resurrect it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub deleted: Vec<Tombstone>,
-}
-
-/// The format version written by this build. Version 0 is the original
-/// headerless format; files without a `version` field are read as 0 and are
-/// byte-compatible with 1, so no rewrite is needed to open them.
-const CURRENT_VERSION: u32 = 1;
-
-/// On-disk vault file format.
-#[derive(Debug, Serialize, Deserialize)]
-struct VaultFile {
-    #[serde(default)]
-    version: u32,
-    /// Argon2id cost this file's key was derived with. Missing in v0 files,
-    /// which all used the values now in `crypto::DEFAULT_KDF`.
-    #[serde(default)]
-    kdf: crypto::KdfParams,
-    /// Base64-encoded Argon2id salt
-    salt: String,
-    /// Base64(nonce || AES-GCM ciphertext) of the JSON vault data
-    ciphertext: String,
-}
-
-impl VaultFile {
-    /// A fresh header at the current version and cost.
-    fn new(salt: &[u8], ciphertext: String) -> Self {
-        VaultFile {
-            version: CURRENT_VERSION,
-            kdf: crypto::DEFAULT_KDF,
-            salt: base64::engine::general_purpose::STANDARD.encode(salt),
-            ciphertext,
-        }
-    }
-
-    fn salt_bytes(&self) -> Result<Vec<u8>, String> {
-        base64::engine::general_purpose::STANDARD
-            .decode(&self.salt)
-            .map_err(|e| e.to_string())
-    }
-}
+// The records, their edits and their merge live in the folder-crdt crate,
+// and so does reading and writing the file and keeping it in step with
+// other devices. The app shows entries and folders in their flat form,
+// re-exported here under the names the rest of the app uses.
+pub use folder_crdt::vault::{EntryView as Entry, FolderView as Folder, VaultData};
+use folder_crdt::codec::{read_params, Envelope};
+use folder_crdt::format::FormatError;
+use folder_crdt::vault::file::{self as vault_file, FileCodec};
+use folder_crdt::vault::Fields;
+use folder_crdt::{Cipher, FolderStore, Hlc, HlcClock, KeyMismatch, Merge, Store, StoreError};
 
 /// On mobile, the vault directory is set at startup from Tauri's
 /// app-data path (the iOS/Android app sandbox). Desktop keeps the
@@ -185,18 +59,113 @@ fn vault_path() -> Result<PathBuf, String> {
     Ok(vault_dir()?.join("vault.enc"))
 }
 
-/// The vault file exactly as this process last read or wrote it. When the
-/// file on disk no longer matches, another device (through a sync client)
-/// has written to it, and its changes are merged in before ours go out.
-/// Ciphertext only, so nothing here needs zeroizing.
-static LAST_SEEN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// This device's clock. Every edit is stamped from it, and it observes every
+/// vault loaded or merged, so an edit always sorts after what it was made on.
+static CLOCK: Mutex<Option<HlcClock>> = Mutex::new(None);
 
-fn remember(raw: &str) {
-    *LAST_SEEN.lock().unwrap() = Some(raw.to_owned());
+/// Loads this device's id from `dir`, creating it on first run. `dir` must
+/// be the app's local data folder, never the sync folder: the id tells
+/// devices apart. Without it (or in tests) each run gets a fresh random id,
+/// which is still correct, just less tidy.
+pub fn set_device_dir(dir: &Path) {
+    match folder_crdt::fs::device_id(dir) {
+        Ok(id) => *CLOCK.lock().unwrap() = Some(HlcClock::new(id)),
+        Err(e) => eprintln!("Could not store the device id, using a temporary one: {e}"),
+    }
 }
 
-fn changed_since_seen(raw: &str) -> bool {
-    LAST_SEEN.lock().unwrap().as_deref() != Some(raw)
+fn with_clock<R>(f: impl FnOnce(&mut HlcClock) -> R) -> R {
+    let mut clock = CLOCK.lock().unwrap();
+    let clock = clock.get_or_insert_with(|| {
+        HlcClock::new(folder_crdt::fs::random_device_id().unwrap_or(u64::MAX))
+    });
+    f(clock)
+}
+
+/// A fresh timestamp for an edit.
+fn now() -> Hlc {
+    with_clock(HlcClock::now)
+}
+
+/// Moves this device's clock past everything in `data`.
+fn observe(data: &VaultData) {
+    if let Some(latest) = data.latest_clock() {
+        with_clock(|c| c.observe(latest));
+    }
+}
+
+// ── The file ──────────────────────────────────────────────────────────────────
+
+/// Vault's encryption, handed to folder-crdt: AES-256-GCM under the key
+/// derived from the master password. The Argon2id salt and cost it was
+/// derived with are stored in cleartext beside the ciphertext, so the key
+/// can be derived again.
+pub struct VaultCipher {
+    key: Zeroizing<[u8; 32]>,
+    kdf: KdfParams,
+    salt: Vec<u8>,
+}
+
+impl VaultCipher {
+    fn new(key: &[u8; 32], kdf: KdfParams, salt: Vec<u8>) -> Self {
+        VaultCipher { key: Zeroizing::new(*key), kdf, salt }
+    }
+
+    /// A new salt and key for `password`, at the current cost.
+    fn fresh(password: &str) -> Result<Self, String> {
+        let salt = crypto::generate_salt();
+        let key = crypto::derive_key(password, &salt)?;
+        Ok(VaultCipher::new(&key, crypto::DEFAULT_KDF, salt.to_vec()))
+    }
+
+    /// The key for the file `bytes`, derived from `password` with the salt
+    /// and cost the file was written with, not the current defaults, or
+    /// raising the cost would lock users out.
+    fn for_file(password: &str, bytes: &[u8]) -> Result<Self, String> {
+        let (kdf, salt) = file_params(bytes)?;
+        let key = crypto::derive_key_with(password, &salt, kdf)?;
+        Ok(VaultCipher::new(&key, kdf, salt))
+    }
+}
+
+impl Cipher for VaultCipher {
+    fn params(&self) -> Map<String, Value> {
+        let mut params = Map::new();
+        params.insert("kdf".into(), serde_json::to_value(self.kdf).unwrap_or_default());
+        params.insert("salt".into(), B64.encode(&self.salt).into());
+        params
+    }
+
+    fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>, StoreError> {
+        crypto::seal(plaintext, &self.key).map_err(|e| StoreError::Io(io::Error::other(e)))
+    }
+
+    fn open(&self, sealed: &[u8]) -> Result<Zeroizing<Vec<u8>>, KeyMismatch> {
+        crypto::open(sealed, &self.key).map_err(|_| KeyMismatch)
+    }
+}
+
+/// The Argon2id cost and salt in a vault file's cleartext. Files from before
+/// the cost was stored all used the values now in `crypto::DEFAULT_KDF`.
+fn file_params(bytes: &[u8]) -> Result<(KdfParams, Vec<u8>), String> {
+    let params = read_params(bytes).map_err(describe)?;
+    let kdf = match params.get("kdf") {
+        Some(kdf) => serde_json::from_value(kdf.clone()).map_err(|e| format!("Failed to parse vault: {e}"))?,
+        None => crypto::DEFAULT_KDF,
+    };
+    let salt = params
+        .get("salt")
+        .and_then(Value::as_str)
+        .and_then(|s| B64.decode(s).ok())
+        .ok_or("Failed to parse vault: no salt")?;
+    Ok((kdf, salt))
+}
+
+/// Reads a vault file and checks it is a layout this build can open.
+fn read_vault_file(path: &Path) -> Result<Vec<u8>, String> {
+    let bytes = fs::read(path).map_err(|_| "Vault file not found".to_string())?;
+    vault_file::check(&bytes).map_err(describe)?;
+    Ok(bytes)
 }
 
 /// What `save_vault` and `sync` report when the file on disk no longer opens
@@ -204,37 +173,75 @@ fn changed_since_seen(raw: &str) -> bool {
 pub const KEY_CHANGED: &str =
     "The master password was changed on another device. Unlock Vault with the new password.";
 
-/// Writes the vault file atomically: write to a temp file in the same
-/// directory, fsync, then rename over the target. A crash mid-write can
-/// no longer corrupt the only copy of the vault. The file is created
-/// owner-readable only (0600) on Unix.
-fn write_vault_file(path: &Path, contents: &str) -> Result<(), String> {
-    let tmp = path.with_extension("enc.tmp");
-    {
-        let mut opts = fs::OpenOptions::new();
-        opts.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        let mut f = opts.open(&tmp).map_err(|e| e.to_string())?;
-        f.write_all(contents.as_bytes()).map_err(|e| e.to_string())?;
-        f.sync_all().map_err(|e| e.to_string())?;
+/// The message the user sees for a store error.
+fn describe(e: StoreError) -> String {
+    match e {
+        StoreError::KeyMismatch => KEY_CHANGED.into(),
+        StoreError::Format(FormatError::Newer { schema, .. }) => format!(
+            "This vault was written by a newer version of Vault (format {schema}). Update Vault to open it."
+        ),
+        StoreError::Format(e) => format!("This is not a Vault file: {e}"),
+        StoreError::Corrupt(why) => format!("Failed to parse vault: {why}"),
+        StoreError::Io(e) if e.kind() == io::ErrorKind::NotFound => "Vault file not found".into(),
+        StoreError::Io(e) => e.to_string(),
     }
-    // A sync client uploading the previous version can hold the file open
-    // for a moment, which makes the rename fail on Windows. Give it a few tries.
-    let mut attempt = 0;
-    loop {
-        match fs::rename(&tmp, path) {
-            Ok(()) => return Ok(()),
-            Err(_) if attempt < 4 => {
-                attempt += 1;
-                std::thread::sleep(std::time::Duration::from_millis(150));
-            }
-            Err(e) => return Err(e.to_string()),
-        }
+}
+
+/// Like `describe`, for opening a vault, where a key that doesn't fit means
+/// a wrong password.
+fn describe_unlock(e: StoreError) -> String {
+    match e {
+        StoreError::KeyMismatch => crypto::WRONG_KEY.into(),
+        e => describe(e),
     }
+}
+
+type VaultStore = FolderStore<FileCodec<VaultCipher>>;
+
+/// The vault file, with the bytes this process last read or wrote of it.
+/// When the file no longer matches them, another device (through a sync
+/// client) has written to it, and its changes are merged in before ours go
+/// out. Replaced on every unlock.
+static STORE: Mutex<Option<VaultStore>> = Mutex::new(None);
+
+/// Opens the vault in the vault folder with `cipher`, and makes it the
+/// store later saves go through.
+fn open_store(cipher: VaultCipher) -> Result<VaultData, String> {
+    let mut store = vault_file::store(vault_dir()?, cipher);
+    let data = store.load().map_err(describe_unlock)?;
+    observe(&data);
+    *STORE.lock().unwrap() = Some(store);
+    Ok(data)
+}
+
+/// Runs `f` on the store for the vault folder, under `key`. Rebuilt when the
+/// folder or key changed since the last unlock: the vault was moved, or a
+/// test is playing another device.
+fn with_store<R>(key: &[u8; 32], f: impl FnOnce(&mut VaultStore) -> Result<R, StoreError>) -> Result<R, String> {
+    let dir = vault_dir()?;
+    let mut guard = STORE.lock().unwrap();
+    let current = guard
+        .as_ref()
+        .is_some_and(|s| s.dir() == dir && *s.codec().cipher().key == *key);
+    if !current {
+        // This key was derived with the salt and cost in the file
+        let (kdf, salt) = file_params(&read_vault_file(&dir.join("vault.enc"))?)?;
+        let codec = FileCodec::new(VaultCipher::new(key, kdf, salt));
+        match guard.as_mut() {
+            Some(store) if store.dir() == dir => store.set_codec(codec),
+            _ => *guard = Some(FolderStore::new(dir, "vault", "enc", codec)),
+        }
+        // A key that differs from the last one must open the file before
+        // anything is written with it
+        guard.as_mut().unwrap().forget();
+    }
+    f(guard.as_mut().unwrap()).map_err(describe)
+}
+
+/// Writes `contents` atomically (temp file, fsync, rename), so a crash
+/// mid-write can never corrupt the only copy of the vault.
+fn write_vault_file(path: &Path, contents: &[u8]) -> Result<(), String> {
+    folder_crdt::fs::write_atomic(path, contents).map_err(|e| e.to_string())
 }
 
 /// Returns true if a vault file already exists on disk.
@@ -247,130 +254,61 @@ pub fn create_vault(master_password: &str) -> Result<(), String> {
     if vault_exists() {
         return Err("Vault already exists".into());
     }
-
-    let salt = crypto::generate_salt();
-    let key = crypto::derive_key(master_password, &salt)?;
-
-    let data = VaultData::default();
-    let json = Zeroizing::new(serde_json::to_vec(&data).map_err(|e| e.to_string())?);
-    let ciphertext = crypto::encrypt(&json, &key)?;
-
-    let file = VaultFile::new(&salt, ciphertext);
-
-    let path = vault_path()?;
-    fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
-
-    let json_file = serde_json::to_string(&file).map_err(|e| e.to_string())?;
-    write_vault_file(&path, &json_file)
+    let mut store = vault_file::store(vault_dir()?, VaultCipher::fresh(master_password)?);
+    store.create(&VaultData::default()).map_err(describe)
 }
 
-/// Reads the vault file and checks it is a format this build understands.
-/// Returns the raw text alongside the parsed header.
-fn read_vault_file() -> Result<(String, VaultFile), String> {
-    read_vault_file_at(&vault_path()?)
-}
-
-fn read_vault_file_at(path: &Path) -> Result<(String, VaultFile), String> {
-    let raw = fs::read_to_string(path)
-        .map_err(|_| "Vault file not found".to_string())?;
-    let file = parse_vault_file(&raw)?;
-    Ok((raw, file))
-}
-
-fn parse_vault_file(raw: &str) -> Result<VaultFile, String> {
-    let file: VaultFile = serde_json::from_str(raw).map_err(|e| e.to_string())?;
-
-    if file.version > CURRENT_VERSION {
-        return Err(format!(
-            "This vault was written by a newer version of Vault (format {}). Update Vault to open it.",
-            file.version
-        ));
-    }
-    Ok(file)
-}
-
-fn parse_vault_data(file: &VaultFile, key: &[u8; 32]) -> Result<VaultData, String> {
-    let plaintext = crypto::decrypt(&file.ciphertext, key)?;
-    serde_json::from_slice(&plaintext).map_err(|e| format!("Failed to parse vault: {e}"))
-}
-
-/// Loads and decrypts the vault. Returns the key (held in app state) and the data.
+/// Loads and decrypts the vault. Returns the key (held in app state) and the
+/// data. A vault from before schema 2 is converted, and written in the
+/// current layout with the next save.
 pub fn unlock_vault(master_password: &str) -> Result<(Zeroizing<[u8; 32]>, VaultData), String> {
-    let (raw, file) = read_vault_file()?;
-
-    // Always derive with the parameters the file was written with, not the
-    // current defaults, or raising the cost would lock users out.
-    let key = crypto::derive_key_with(master_password, &file.salt_bytes()?, file.kdf)?;
-
-    let data = parse_vault_data(&file, &key)?;
-    remember(&raw);
-    Ok((key, data))
+    let bytes = read_vault_file(&vault_path()?)?;
+    let cipher = VaultCipher::for_file(master_password, &bytes)?;
+    let key = cipher.key.clone();
+    Ok((key, open_store(cipher)?))
 }
 
 /// Opens the vault with a key already in hand, for quick unlock, where the
 /// key was kept (wrapped) from an earlier master-password unlock rather than
 /// derived again. Fails if the vault file has been replaced since.
 pub fn unlock_with_key(key: &[u8; 32]) -> Result<VaultData, String> {
-    let (raw, file) = read_vault_file()?;
-    let data = parse_vault_data(&file, key)?;
-    remember(&raw);
-    Ok(data)
+    let (kdf, salt) = file_params(&read_vault_file(&vault_path()?)?)?;
+    open_store(VaultCipher::new(key, kdf, salt))
 }
 
 /// Re-encrypts the vault under a new master password. Verifies the current
-/// password against the on-disk file first, then generates a fresh salt and
-/// key and rewrites the vault atomically. Returns the new session key.
+/// password against the on-disk file first, merging in anything another
+/// device wrote, then generates a fresh salt and key and rewrites the vault
+/// atomically. Returns the new session key.
 pub fn change_master_password(
     current_password: &str,
     new_password: &str,
     data: &mut VaultData,
 ) -> Result<Zeroizing<[u8; 32]>, String> {
-    let path = vault_path()?;
-    let (raw, file) = read_vault_file_at(&path)?;
-
-    let current_key = crypto::derive_key_with(current_password, &file.salt_bytes()?, file.kdf)?;
-    let on_disk = parse_vault_data(&file, &current_key)
-        .map_err(|_| "Current password is incorrect".to_string())?;
-    // Another device may have written since; those changes must make it into
-    // the re-keyed file rather than be overwritten by it.
-    if changed_since_seen(&raw) {
-        merge(data, on_disk);
-    }
+    let bytes = read_vault_file(&vault_path()?)?;
+    let mut store = vault_file::store(vault_dir()?, VaultCipher::for_file(current_password, &bytes)?);
+    let on_disk = store.load().map_err(|_| "Current password is incorrect".to_string())?;
+    data.merge(on_disk);
+    observe(data);
 
     // A new password means a new key, so this is the one moment the vault can
-    // move to the current format and cost without knowing the old password twice.
-    let new_salt = crypto::generate_salt();
-    let new_key = crypto::derive_key(new_password, &new_salt)?;
-
-    let json = Zeroizing::new(serde_json::to_vec(data).map_err(|e| e.to_string())?);
-    let ciphertext = crypto::encrypt(&json, &new_key)?;
-
-    let updated = VaultFile::new(&new_salt, ciphertext);
-
-    let out = serde_json::to_string(&updated).map_err(|e| e.to_string())?;
-    write_vault_file(&path, &out)?;
-    remember(&out);
-    Ok(new_key)
+    // move to the current cost without knowing the old password twice.
+    let cipher = VaultCipher::fresh(new_password)?;
+    let key = cipher.key.clone();
+    store.set_codec(FileCodec::new(cipher));
+    store.save(data).map_err(describe)?;
+    *STORE.lock().unwrap() = Some(store);
+    Ok(key)
 }
 
-/// Encrypts `data` under `key` and writes it to `path`, keeping the salt and
-/// cost from `header`: the key in hand was derived from them, and re-deriving
-/// needs the master password. Changing the master password is what moves a
-/// vault to the current parameters.
-fn write_data(path: &Path, header: &VaultFile, key: &[u8; 32], data: &VaultData) -> Result<(), String> {
-    let json = Zeroizing::new(serde_json::to_vec(data).map_err(|e| e.to_string())?);
-    let ciphertext = crypto::encrypt(&json, key)?;
-
-    let updated = VaultFile {
-        version: header.version.max(CURRENT_VERSION),
-        kdf: header.kdf,
-        salt: header.salt.clone(),
-        ciphertext,
-    };
-
-    let out = serde_json::to_string(&updated).map_err(|e| e.to_string())?;
-    write_vault_file(path, &out)?;
-    remember(&out);
+/// Encrypts and writes VaultData back to disk using the current session key.
+/// If another device has written to the file since this one last read it,
+/// its changes are merged into `data` first, so neither side's edits are
+/// lost. A file this key can't open is never overwritten: that is a password
+/// change made elsewhere, and writing would undo it.
+pub fn save_vault(key: &[u8; 32], data: &mut VaultData) -> Result<(), String> {
+    with_store(key, |store| store.save(data))?;
+    observe(data);
 
     // Every entry and folder change comes through here
     #[cfg(target_os = "ios")]
@@ -378,180 +316,13 @@ fn write_data(path: &Path, header: &VaultFile, key: &[u8; 32], data: &VaultData)
     Ok(())
 }
 
-/// Encrypts and writes VaultData back to disk using the current session key.
-/// If another device has written to the file since this one last read it,
-/// its changes are merged into `data` first, so neither side's edits are lost.
-pub fn save_vault(key: &[u8; 32], data: &mut VaultData) -> Result<(), String> {
-    let path = vault_path()?;
-    let (raw, file) = read_vault_file_at(&path)?;
-
-    if changed_since_seen(&raw) {
-        // Never overwrite a file this key can't read: that is a password
-        // change made elsewhere, and writing would undo it.
-        let theirs = parse_vault_data(&file, key).map_err(|_| KEY_CHANGED.to_string())?;
-        merge(data, theirs);
-    }
-
-    write_data(&path, &file, key, data)
-}
-
 // ── Sync ──────────────────────────────────────────────────────────────────────
 //
 // Syncing is left to whatever already syncs a folder (OneDrive, Dropbox,
 // iCloud Drive, Syncthing): the vault file simply lives in that folder. Those
 // tools only move whole files, so two devices editing offline produce two
-// versions of it. Vault reconciles them here, entry by entry, so both
-// devices' edits survive. The sync tool only ever sees ciphertext.
-
-/// Merges another copy of this vault into `ours`. The result is the same
-/// whichever side is `ours`, and merging the same copy twice changes nothing,
-/// so devices converge however their sync client interleaves the files.
-///
-/// - Entries and folders: the most recently updated copy wins.
-/// - Passwords follow their own clock (`password_changed_at`), so a
-///   rotation on one device isn't undone by a notes edit on another. The
-///   losing password goes into the history rather than being dropped.
-/// - Deletions win over any edit made before them.
-pub fn merge(ours: &mut VaultData, mut theirs: VaultData) {
-    for tomb in std::mem::take(&mut theirs.deleted) {
-        match ours.deleted.iter_mut().find(|t| t.id == tomb.id) {
-            Some(t) => t.deleted_at = t.deleted_at.max(tomb.deleted_at),
-            None => ours.deleted.push(tomb),
-        }
-    }
-
-    for entry in std::mem::take(&mut theirs.entries) {
-        match ours.entries.iter_mut().find(|e| e.id == entry.id) {
-            Some(existing) => merge_entry(existing, entry),
-            None => ours.entries.push(entry),
-        }
-    }
-
-    for folder in std::mem::take(&mut theirs.folders) {
-        match ours.folders.iter_mut().find(|f| f.id == folder.id) {
-            Some(existing) => {
-                if (folder.updated_at, &folder.name) > (existing.updated_at, &existing.name) {
-                    *existing = folder;
-                }
-            }
-            None => ours.folders.push(folder),
-        }
-    }
-
-    let deleted = &ours.deleted;
-    let survives = |id: &str, updated_at: u64| {
-        deleted.iter().find(|t| t.id == id).map_or(true, |t| updated_at > t.deleted_at)
-    };
-    ours.entries.retain(|e| survives(&e.id, e.updated_at));
-    ours.folders.retain(|f| survives(&f.id, f.updated_at));
-
-    // An entry filed under a folder another device deleted ends up unfiled,
-    // as it would have had the delete happened here.
-    for entry in ours.entries.iter_mut() {
-        if let Some(folder_id) = &entry.folder_id {
-            if !ours.folders.iter().any(|f| &f.id == folder_id) {
-                entry.folder_id = None;
-            }
-        }
-    }
-}
-
-/// A total order on two copies of one entry: newer edit first, then the
-/// serialized content, so equal timestamps still pick the same winner on
-/// every device instead of each keeping its own.
-fn entry_is_newer(a: &Entry, b: &Entry) -> bool {
-    if a.updated_at != b.updated_at {
-        return a.updated_at > b.updated_at;
-    }
-    let a_json = Zeroizing::new(serde_json::to_vec(a).unwrap_or_default());
-    let b_json = Zeroizing::new(serde_json::to_vec(b).unwrap_or_default());
-    *a_json > *b_json
-}
-
-fn password_is_newer(a: &Entry, b: &Entry) -> bool {
-    (a.password_changed_at.unwrap_or(0), &a.password)
-        > (b.password_changed_at.unwrap_or(0), &b.password)
-}
-
-fn merge_entry(ours: &mut Entry, mut theirs: Entry) {
-    if entry_is_newer(&theirs, ours) {
-        std::mem::swap(ours, &mut theirs);
-    }
-    // `ours` now holds the winning fields and `theirs` the copy it beat,
-    // except that the password is decided separately.
-    if password_is_newer(&theirs, ours) {
-        std::mem::swap(&mut ours.password, &mut theirs.password);
-        std::mem::swap(&mut ours.password_changed_at, &mut theirs.password_changed_at);
-    }
-
-    ours.last_used_at = ours.last_used_at.max(theirs.last_used_at);
-    ours.use_count = ours.use_count.max(theirs.use_count);
-
-    let mut history = std::mem::take(&mut ours.password_history);
-    for past in std::mem::take(&mut theirs.password_history) {
-        let known = history
-            .iter()
-            .any(|h| h.password == past.password && h.replaced_at == past.replaced_at);
-        if !known {
-            history.push(past);
-        }
-    }
-    // Two devices that each rotated the password: keep the one that lost, in
-    // case it is the one the website actually has.
-    if theirs.password != ours.password && !history.iter().any(|h| h.password == theirs.password) {
-        history.push(PastPassword {
-            password: std::mem::take(&mut theirs.password),
-            replaced_at: ours.password_changed_at.unwrap_or(ours.updated_at),
-        });
-    }
-    history.sort_by(|a, b| (a.replaced_at, &a.password).cmp(&(b.replaced_at, &b.password)));
-    if history.len() > MAX_PASSWORD_HISTORY {
-        history.drain(..history.len() - MAX_PASSWORD_HISTORY);
-    }
-    ours.password_history = history;
-}
-
-/// `data` in an order-independent form, for telling whether a merge changed
-/// anything. Comparing the raw vaults would not do: the same entries in a
-/// different order would look like a change and make two devices rewrite the
-/// file back and forth.
-fn canonical(data: &VaultData) -> Zeroizing<Vec<u8>> {
-    #[derive(Serialize)]
-    struct Canonical<'a> {
-        entries: Vec<&'a Entry>,
-        folders: Vec<&'a Folder>,
-        deleted: Vec<&'a Tombstone>,
-    }
-    let mut c = Canonical {
-        entries: data.entries.iter().collect(),
-        folders: data.folders.iter().collect(),
-        deleted: data.deleted.iter().collect(),
-    };
-    c.entries.sort_by(|a, b| a.id.cmp(&b.id));
-    c.folders.sort_by(|a, b| a.id.cmp(&b.id));
-    c.deleted.sort_by(|a, b| a.id.cmp(&b.id));
-    Zeroizing::new(serde_json::to_vec(&c).unwrap_or_default())
-}
-
-/// The extra copies sync clients leave beside a file two devices changed at
-/// once: "vault (Will's conflicted copy).enc" (Dropbox), "vault-LAPTOP.enc"
-/// (OneDrive), "vault.sync-conflict-….enc" (Syncthing), "vault 2.enc"
-/// (iCloud). Exported backups are named "vault-backup…" and are left alone.
-fn conflict_copies(dir: &Path) -> Vec<PathBuf> {
-    let Ok(read) = fs::read_dir(dir) else { return Vec::new() };
-    read.filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            let Some(name) = p.file_name().and_then(|n| n.to_str()) else { return false };
-            let name = name.to_ascii_lowercase();
-            p.is_file()
-                && name != "vault.enc"
-                && name.starts_with("vault")
-                && name.ends_with(".enc")
-                && !name.starts_with("vault-backup")
-        })
-        .collect()
-}
+// versions of it. folder-crdt's FolderStore reconciles them, field by field,
+// so both devices' edits survive. The sync tool only ever sees ciphertext.
 
 /// Brings `data` up to date with the vault file, merging in anything another
 /// device wrote and any conflict copies a sync client left beside it, then
@@ -559,52 +330,20 @@ fn conflict_copies(dir: &Path) -> Vec<PathBuf> {
 /// deleted once merged; ones this key can't open are left where they are.
 /// Returns true if `data` changed, so the UI knows to reload.
 pub fn sync(key: &[u8; 32], data: &mut VaultData) -> Result<bool, String> {
-    let path = vault_path()?;
     // Missing for a moment while a sync client swaps the file; try next time
-    let Ok((raw, file)) = read_vault_file_at(&path) else { return Ok(false) };
-
-    let remote_changed = changed_since_seen(&raw);
-    let conflicts = conflict_copies(path.parent().unwrap_or(Path::new(".")));
-    if !remote_changed && conflicts.is_empty() {
+    if !vault_exists() {
         return Ok(false);
     }
-
-    let before = canonical(data);
-    // What the file holds now, to decide whether it needs rewriting. When it
-    // is unchanged since we wrote it, that is `data` as it stood then.
-    let on_disk = if remote_changed {
-        let theirs = parse_vault_data(&file, key).map_err(|_| KEY_CHANGED.to_string())?;
-        let on_disk = canonical(&theirs);
-        merge(data, theirs);
-        on_disk
-    } else {
-        before.clone()
-    };
-
-    let mut merged = Vec::new();
-    for copy in conflicts {
-        let theirs = fs::read_to_string(&copy)
-            .ok()
-            .and_then(|raw| parse_vault_file(&raw).ok())
-            .and_then(|f| parse_vault_data(&f, key).ok());
-        if let Some(theirs) = theirs {
-            merge(data, theirs);
-            merged.push(copy);
-        }
+    let outcome = with_store(key, |store| store.sync(data))?;
+    observe(data);
+    for (copy, e) in &outcome.unreadable {
+        eprintln!("Left conflict copy {} unmerged: {e}", copy.display());
     }
-
-    let after = canonical(data);
-    if *after != *on_disk || !merged.is_empty() {
-        write_data(&path, &file, key, data)?;
-    } else {
-        // Already in step: just note that this version has been seen
-        remember(&raw);
+    #[cfg(target_os = "ios")]
+    if outcome.wrote {
+        crate::autofill::refresh(data);
     }
-    // Only now that their contents are safely in the main file
-    for copy in merged {
-        let _ = fs::remove_file(copy);
-    }
-    Ok(*after != *before)
+    Ok(outcome.changed)
 }
 
 /// Moves the vault file into `dir` (a folder a sync client watches) and
@@ -621,7 +360,7 @@ pub fn move_vault_to(dir: &Path) -> Result<(), String> {
     if dest.exists() {
         return Err("This folder already contains a vault".into());
     }
-    let raw = fs::read_to_string(&src).map_err(|_| "Vault file not found".to_string())?;
+    let raw = fs::read(&src).map_err(|_| "Vault file not found".to_string())?;
     fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     write_vault_file(&dest, &raw)?;
     set_vault_dir(dir.to_path_buf());
@@ -642,13 +381,19 @@ pub fn join_vault_in(
 ) -> Result<Zeroizing<[u8; 32]>, String> {
     let src = vault_path()?;
     let dest = dir.join("vault.enc");
-    let (_, file) = read_vault_file_at(&dest)?;
-    let key = crypto::derive_key_with(password, &file.salt_bytes()?, file.kdf)?;
-    let theirs = parse_vault_data(&file, &key)
-        .map_err(|_| "That password doesn't open the vault in this folder".to_string())?;
+    let bytes = read_vault_file(&dest)?;
+    let cipher = VaultCipher::for_file(password, &bytes)?;
+    let key = cipher.key.clone();
+    let mut store = vault_file::store(dir, cipher);
+    let theirs = store.load().map_err(|e| match e {
+        StoreError::KeyMismatch => "That password doesn't open the vault in this folder".to_string(),
+        e => describe(e),
+    })?;
 
-    merge(data, theirs);
-    write_data(&dest, &file, &key, data)?;
+    data.merge(theirs);
+    observe(data);
+    store.save(data).map_err(describe)?;
+    *STORE.lock().unwrap() = Some(store);
     set_vault_dir(dir.to_path_buf());
     if src != dest {
         let _ = fs::rename(&src, src.with_file_name("vault.enc.pre-sync"));
@@ -664,7 +409,7 @@ pub fn open_vault_in(dir: &Path) -> Result<(), String> {
     if !dest.exists() {
         return Err("There is no vault.enc in that folder".into());
     }
-    read_vault_file_at(&dest)?;
+    read_vault_file(&dest)?;
     set_vault_dir(dir.to_path_buf());
     Ok(())
 }
@@ -678,18 +423,11 @@ pub fn move_vault_home(home: &Path) -> Result<(), String> {
     if src == dest {
         return Ok(());
     }
-    let raw = fs::read_to_string(&src).map_err(|_| "Vault file not found".to_string())?;
+    let raw = fs::read(&src).map_err(|_| "Vault file not found".to_string())?;
     fs::create_dir_all(home).map_err(|e| e.to_string())?;
     write_vault_file(&dest, &raw)?;
     set_vault_dir(home.to_path_buf());
     Ok(())
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 /// Adds a new entry and saves the vault.
@@ -705,32 +443,17 @@ pub fn add_entry(
     folder_id: Option<String>,
     totp_secret: Option<String>,
 ) -> Result<Entry, String> {
-    let now = now_secs();
-    let entry = Entry {
-        id: Uuid::new_v4().to_string(),
-        name,
-        kind: EntryKind::Login,
-        username,
-        email,
-        password,
-        url,
-        notes,
-        folder_id,
-        totp_secret,
-        created_at: now,
-        updated_at: now,
-        password_changed_at: Some(now),
-        password_history: Vec::new(),
-        last_used_at: None,
-        use_count: 0,
-    };
-    data.entries.push(entry.clone());
+    let fields = Fields { name, username, email, password, url, notes, folder_id, totp_secret };
+    let id = Uuid::new_v4().to_string();
+    data.add_entry(id.clone(), fields, now())?;
     save_vault(key, data)?;
-    Ok(entry)
+    data.entry_view(&id).ok_or_else(|| "Entry not found".into())
 }
 
-/// Updates an existing entry by id and saves the vault, returning the
-/// entry as it now stands.
+/// Saves the edit form for an entry and returns the entry as it now
+/// stands. Only the fields that changed are written, so an edit made on
+/// another device to a different field survives; a changed password moves
+/// the old one into history.
 pub fn update_entry(
     key: &[u8; 32],
     data: &mut VaultData,
@@ -744,104 +467,44 @@ pub fn update_entry(
     folder_id: Option<String>,
     totp_secret: Option<String>,
 ) -> Result<Entry, String> {
-    let entry = data
-        .entries
-        .iter_mut()
-        .find(|e| e.id == id)
-        .ok_or("Entry not found")?;
-
-    let now = now_secs();
-
-    // Only a real password change touches the history and the rotation date,
-    // so editing notes or a URL doesn't make the entry look freshly rotated.
-    if entry.password != password {
-        entry.password_history.push(PastPassword {
-            password: std::mem::replace(&mut entry.password, password),
-            replaced_at: now,
-        });
-        if entry.password_history.len() > MAX_PASSWORD_HISTORY {
-            entry.password_history.remove(0);
-        }
-        entry.password_changed_at = Some(now);
-    }
-
-    entry.name = name;
-    entry.username = username;
-    entry.email = email;
-    entry.url = url;
-    entry.notes = notes;
-    entry.folder_id = folder_id;
-    entry.totp_secret = totp_secret;
-    entry.updated_at = now;
-
-    // Returned so the caller doesn't have to reproduce the history rules
-    // above to know what the entry now looks like.
-    let updated = entry.clone();
+    let fields = Fields { name, username, email, password, url, notes, folder_id, totp_secret };
+    data.update_entry(id, fields, now())?;
     save_vault(key, data)?;
-    Ok(updated)
+    // After the save, which may have merged in another device's edits
+    data.entry_view(id).ok_or_else(|| "Entry not found".into())
 }
 
 /// Adds a new folder and saves the vault.
 pub fn add_folder(key: &[u8; 32], data: &mut VaultData, name: String) -> Result<Folder, String> {
-    let folder = Folder { id: Uuid::new_v4().to_string(), name, updated_at: now_secs() };
-    data.folders.push(folder.clone());
+    let folder = data.add_folder(Uuid::new_v4().to_string(), name, now())?;
     save_vault(key, data)?;
     Ok(folder)
 }
 
 /// Renames an existing folder by id and saves the vault.
 pub fn rename_folder(key: &[u8; 32], data: &mut VaultData, id: &str, name: String) -> Result<(), String> {
-    let folder = data.folders.iter_mut().find(|f| f.id == id).ok_or("Folder not found")?;
-    folder.name = name;
-    folder.updated_at = now_secs();
+    data.rename_folder(id, name, now())?;
     save_vault(key, data)
 }
 
 /// Deletes a folder by id, unassigns all entries in it, and saves the vault.
 pub fn delete_folder(key: &[u8; 32], data: &mut VaultData, id: &str) -> Result<(), String> {
-    let before = data.folders.len();
-    data.folders.retain(|f| f.id != id);
-    if data.folders.len() == before {
-        return Err("Folder not found".into());
-    }
-    record_deletion(data, id);
-    for entry in data.entries.iter_mut() {
-        if entry.folder_id.as_deref() == Some(id) {
-            entry.folder_id = None;
-        }
-    }
+    data.delete_folder(id, now())?;
     save_vault(key, data)
 }
 
 /// Records that a credential from the entry was copied, for recency
 /// ordering in the overlay, and saves the vault.
 pub fn mark_entry_used(key: &[u8; 32], data: &mut VaultData, id: &str) -> Result<(), String> {
-    let entry = data
-        .entries
-        .iter_mut()
-        .find(|e| e.id == id)
-        .ok_or("Entry not found")?;
-    entry.last_used_at = Some(now_secs());
-    entry.use_count = entry.use_count.saturating_add(1);
+    data.mark_entry_used(id, now())?;
     save_vault(key, data)
 }
 
-/// Deletes an entry by id and saves the vault.
+/// Deletes an entry by id and saves the vault. The delete is final: the
+/// entry and its passwords leave the file on every device.
 pub fn delete_entry(key: &[u8; 32], data: &mut VaultData, id: &str) -> Result<(), String> {
-    let before = data.entries.len();
-    data.entries.retain(|e| e.id != id);
-    if data.entries.len() == before {
-        return Err("Entry not found".into());
-    }
-    record_deletion(data, id);
+    data.delete_entry(id, now())?;
     save_vault(key, data)
-}
-
-/// Leaves a tombstone so a sync merge doesn't restore `id` from a device
-/// that hasn't seen the delete yet.
-fn record_deletion(data: &mut VaultData, id: &str) {
-    data.deleted.retain(|t| t.id != id);
-    data.deleted.push(Tombstone { id: id.to_owned(), deleted_at: now_secs() });
 }
 
 /// Adds parsed CSV logins to the vault, creating folders as needed, and
@@ -851,26 +514,22 @@ pub fn import_csv_logins(
     data: &mut VaultData,
     logins: Vec<crate::csv_import::CsvLogin>,
 ) -> Result<usize, String> {
-    let now = now_secs();
     let count = logins.len();
 
     for mut login in logins {
-        let folder_id = std::mem::take(&mut login.folder).map(|name| {
-            match data.folders.iter().find(|f| f.name.eq_ignore_ascii_case(&name)) {
-                Some(f) => f.id.clone(),
-                None => {
-                    let folder = Folder { id: Uuid::new_v4().to_string(), name, updated_at: now };
-                    let id = folder.id.clone();
-                    data.folders.push(folder);
-                    id
+        let folder_id = match std::mem::take(&mut login.folder) {
+            None => None,
+            Some(name) => {
+                let existing = data.folder_views().into_iter().find(|f| f.name.eq_ignore_ascii_case(&name));
+                match existing {
+                    Some(f) => Some(f.id.clone()),
+                    None => Some(data.add_folder(Uuid::new_v4().to_string(), name, now())?.id.clone()),
                 }
             }
-        });
+        };
 
-        data.entries.push(Entry {
-            id: Uuid::new_v4().to_string(),
+        let fields = Fields {
             name: std::mem::take(&mut login.name),
-            kind: EntryKind::Login,
             username: std::mem::take(&mut login.username),
             email: std::mem::take(&mut login.email),
             password: std::mem::take(&mut login.password),
@@ -878,13 +537,8 @@ pub fn import_csv_logins(
             notes: std::mem::take(&mut login.notes),
             folder_id,
             totp_secret: std::mem::take(&mut login.totp_secret),
-            created_at: now,
-            updated_at: now,
-            password_changed_at: Some(now),
-            password_history: Vec::new(),
-            last_used_at: None,
-            use_count: 0,
-        });
+        };
+        data.add_entry(Uuid::new_v4().to_string(), fields, now())?;
     }
 
     if count > 0 {
@@ -908,22 +562,23 @@ pub fn export_vault(dest_path: &Path) -> Result<(), String> {
 /// the existing vault to vault.enc.bak before overwriting, so a bad import
 /// (or one whose password the user has forgotten) is recoverable.
 pub fn import_vault(src_path: &Path) -> Result<(), String> {
-    let raw = fs::read_to_string(src_path)
-        .map_err(|_| "Cannot read the selected file".to_string())?;
-    let file: VaultFile = serde_json::from_str(&raw)
-        .map_err(|_| "Selected file is not a valid vault backup".to_string())?;
+    let raw = fs::read(src_path).map_err(|_| "Cannot read the selected file".to_string())?;
+    let invalid = || "Selected file is not a valid vault backup".to_string();
+    let envelope = Envelope::parse(&raw).map_err(|_| invalid())?;
 
     // Shape checks beyond JSON: salt must be a 32-byte base64 value and the
     // ciphertext must at least hold a 12-byte nonce plus a 16-byte GCM tag.
-    let salt = base64::engine::general_purpose::STANDARD
-        .decode(&file.salt)
-        .map_err(|_| "Selected file is not a valid vault backup".to_string())?;
-    let ciphertext = base64::engine::general_purpose::STANDARD
-        .decode(&file.ciphertext)
-        .map_err(|_| "Selected file is not a valid vault backup".to_string())?;
-    if salt.len() != 32 || ciphertext.len() < 12 + 16 {
-        return Err("Selected file is not a valid vault backup".into());
+    let salt = envelope
+        .params
+        .get("salt")
+        .and_then(Value::as_str)
+        .and_then(|s| B64.decode(s).ok())
+        .ok_or_else(invalid)?;
+    if salt.len() != 32 || envelope.payload.len() < 12 + 16 {
+        return Err(invalid());
     }
+    // A backup from a newer Vault would only fail at the next unlock
+    vault_file::check(&raw).map_err(describe)?;
 
     let dest = vault_path()?;
     fs::create_dir_all(dest.parent().unwrap()).map_err(|e| e.to_string())?;
@@ -939,6 +594,36 @@ pub fn import_vault(src_path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use folder_crdt::format::Header;
+    use folder_crdt::vault::{APP, MAX_PASSWORD_HISTORY, SCHEMA};
+    use folder_crdt::Codec;
+    use serde::{Deserialize, Serialize};
+
+    const CURRENT_VERSION: u32 = SCHEMA;
+
+    /// The vault file's layout, to inspect and forge files.
+    #[derive(Debug, Serialize, Deserialize)]
+    struct VaultFile {
+        #[serde(default)]
+        version: u32,
+        #[serde(flatten, default)]
+        header: Option<Header>,
+        #[serde(default)]
+        kdf: KdfParams,
+        salt: String,
+        ciphertext: String,
+    }
+
+    fn read_file() -> VaultFile {
+        serde_json::from_slice(&fs::read(vault_path().unwrap()).unwrap()).unwrap()
+    }
+
+    /// Writes `data` at `path` as this device would, under `key`.
+    fn write_copy(path: &Path, key: &[u8; 32], data: &VaultData) {
+        let (kdf, salt) = file_params(&fs::read(vault_path().unwrap()).unwrap()).unwrap();
+        let bytes = FileCodec::new(VaultCipher::new(key, kdf, salt)).encode(data).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
     /// `VAULT_DIR` is a process-wide `OnceLock`, so every test in this binary
@@ -985,12 +670,26 @@ mod tests {
         .unwrap()
     }
 
+    /// A login's form, for editing `VaultData` directly as another device.
+    fn fields(name: &str, password: &str) -> Fields {
+        Fields {
+            name: name.into(),
+            username: None,
+            email: "user@example.com".into(),
+            password: password.into(),
+            url: None,
+            notes: None,
+            folder_id: None,
+            totp_secret: None,
+        }
+    }
+
     #[test]
     fn create_and_unlock_vault() {
         let _g = vault_test();
         create_vault("my-master-password").unwrap();
         let (_key, data) = unlock_vault("my-master-password").unwrap();
-        assert!(data.entries.is_empty());
+        assert!(data.entry_views().is_empty());
     }
 
     #[test]
@@ -1015,9 +714,9 @@ mod tests {
         sample_entry(&key, &mut data, "GitHub", "hunter2");
 
         let (_key2, data2) = unlock_vault("password").unwrap();
-        assert_eq!(data2.entries.len(), 1);
-        assert_eq!(data2.entries[0].name, "GitHub");
-        assert_eq!(data2.entries[0].email, "user@example.com");
+        assert_eq!(data2.entry_views().len(), 1);
+        assert_eq!(data2.entry_views()[0].name, "GitHub");
+        assert_eq!(data2.entry_views()[0].email, "user@example.com");
     }
 
     #[test]
@@ -1031,7 +730,7 @@ mod tests {
         assert!(delete_entry(&key, &mut data, &entry.id).is_err());
 
         let (_key2, data2) = unlock_vault("password").unwrap();
-        assert!(data2.entries.is_empty());
+        assert!(data2.entry_views().is_empty());
     }
 
     #[test]
@@ -1048,9 +747,9 @@ mod tests {
         ).unwrap();
 
         let (_key2, data2) = unlock_vault("password").unwrap();
-        assert_eq!(data2.entries[0].name, "New Name");
-        assert_eq!(data2.entries[0].email, "new@example.com");
-        assert_eq!(data2.entries[0].password, "newpass");
+        assert_eq!(data2.entry_views()[0].name, "New Name");
+        assert_eq!(data2.entry_views()[0].email, "new@example.com");
+        assert_eq!(data2.entry_views()[0].password, "newpass");
     }
 
     #[test]
@@ -1074,7 +773,7 @@ mod tests {
         assert_eq!(returned.password_history.len(), 2);
 
         let (_key2, data2) = unlock_vault("password").unwrap();
-        let stored = &data2.entries[0];
+        let stored = data2.entry_views().remove(0);
         assert_eq!(stored.password, "third");
         let history: Vec<&str> = stored
             .password_history
@@ -1090,7 +789,7 @@ mod tests {
         create_vault("password").unwrap();
         let (key, mut data) = unlock_vault("password").unwrap();
         let entry = sample_entry(&key, &mut data, "Stable", "same-password");
-        let changed_at = data.entries[0].password_changed_at;
+        let changed_at = data.entry_views()[0].password_changed_at;
 
         update_entry(
             &key, &mut data, &entry.id,
@@ -1099,8 +798,8 @@ mod tests {
         ).unwrap();
 
         let (_key2, data2) = unlock_vault("password").unwrap();
-        assert!(data2.entries[0].password_history.is_empty());
-        assert_eq!(data2.entries[0].password_changed_at, changed_at);
+        assert!(data2.entry_views()[0].password_history.is_empty());
+        assert_eq!(data2.entry_views()[0].password_changed_at, changed_at);
     }
 
     #[test]
@@ -1118,7 +817,7 @@ mod tests {
             ).unwrap();
         }
 
-        let stored = &data.entries[0];
+        let stored = data.entry_views().remove(0);
         assert_eq!(stored.password_history.len(), MAX_PASSWORD_HISTORY);
         // Oldest are dropped first, so the window ends just before the current one
         assert_eq!(stored.password, format!("pw-{}", MAX_PASSWORD_HISTORY + 3));
@@ -1142,8 +841,8 @@ mod tests {
         delete_folder(&key, &mut data, &folder.id).unwrap();
 
         let (_key2, data2) = unlock_vault("password").unwrap();
-        assert!(data2.folders.is_empty());
-        assert_eq!(data2.entries[0].folder_id, None);
+        assert!(data2.folder_views().is_empty());
+        assert_eq!(data2.entry_views()[0].folder_id, None);
     }
 
     #[test]
@@ -1158,7 +857,7 @@ mod tests {
 
         assert!(unlock_vault("old-password").is_err());
         let (_key2, data2) = unlock_vault("new-password").unwrap();
-        assert_eq!(data2.entries[0].name, "Kept");
+        assert_eq!(data2.entry_views()[0].name, "Kept");
     }
 
     #[test]
@@ -1177,7 +876,7 @@ mod tests {
         import_vault(&backup).unwrap();
 
         let (_key2, data2) = unlock_vault("password").unwrap();
-        assert_eq!(data2.entries[0].name, "Backed Up");
+        assert_eq!(data2.entry_views()[0].name, "Backed Up");
         assert!(vault_path().unwrap().with_extension("enc.bak").exists());
         let _ = fs::remove_file(&backup);
     }
@@ -1194,26 +893,123 @@ mod tests {
         let _ = fs::remove_file(&junk);
     }
 
-    #[test]
-    fn a_vault_without_a_header_still_unlocks() {
-        let _g = vault_test();
-        create_vault("password").unwrap();
+    // ── Versions ──────────────────────────────────────────────────────────
 
-        // Rewrite it in the original headerless shape, as an existing
-        // installation's file is on disk today
+    /// A schema 1 vault's contents, as installations hold them today.
+    fn schema_1_contents() -> serde_json::Value {
+        serde_json::json!({
+            "entries": [{
+                "id": "bank", "name": "Bank", "email": "me@example.com",
+                "password": "pw2", "url": null, "notes": null,
+                "created_at": 100, "updated_at": 300, "password_changed_at": 300,
+                "password_history": [{ "password": "pw1", "replaced_at": 300 }],
+                "use_count": 4
+            }],
+            "folders": [{ "id": "f", "name": "Money", "updated_at": 100 }],
+            "deleted": [{ "id": "gone", "deleted_at": 200 }]
+        })
+    }
+
+    /// Writes `contents` as the vault, encrypted under `password`, in the
+    /// file layout of `version` (`None`: the original headerless one).
+    fn write_old_vault(password: &str, version: Option<u32>, contents: &serde_json::Value) {
         let path = vault_path().unwrap();
-        let file: VaultFile = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        let legacy = serde_json::json!({ "salt": file.salt, "ciphertext": file.ciphertext });
-        fs::write(&path, legacy.to_string()).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let salt = crypto::generate_salt();
+        let key = crypto::derive_key(password, &salt).unwrap();
+        let mut file = serde_json::json!({
+            "salt": base64::engine::general_purpose::STANDARD.encode(salt),
+            "ciphertext": crypto::encrypt(contents.to_string().as_bytes(), &key).unwrap(),
+        });
+        if let Some(version) = version {
+            file["version"] = version.into();
+            file["kdf"] = serde_json::to_value(crypto::DEFAULT_KDF).unwrap();
+        }
+        fs::write(&path, file.to_string()).unwrap();
+    }
+
+    /// What the vault file holds, decrypted.
+    fn contents_on_disk(key: &[u8; 32]) -> (VaultFile, serde_json::Value) {
+        let file = read_file();
+        let plaintext = crypto::decrypt(&file.ciphertext, key).unwrap();
+        let contents = serde_json::from_slice(&plaintext).unwrap();
+        (file, contents)
+    }
+
+    #[test]
+    fn a_vault_without_a_header_unlocks_and_is_upgraded_on_save() {
+        let _g = vault_test();
+        write_old_vault("password", None, &serde_json::json!({
+            "entries": [{
+                "id": "1", "name": "Old", "password": "pw", "url": null, "notes": null,
+                "created_at": 5, "updated_at": 6
+            }]
+        }));
 
         let (key, mut data) = unlock_vault("password").unwrap();
-        assert!(data.entries.is_empty());
+        assert_eq!(data.entry_views()[0].name, "Old");
 
-        // The next save stamps the current version onto it
+        // The next save writes it in the current format
         save_vault(&key, &mut data).unwrap();
-        let upgraded: VaultFile = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let (upgraded, _) = contents_on_disk(&key);
         assert_eq!(upgraded.version, CURRENT_VERSION);
+        assert_eq!(upgraded.header, Some(Header::new(APP, SCHEMA)));
         assert_eq!(upgraded.kdf, crypto::DEFAULT_KDF);
+        assert_eq!(unlock_vault("password").unwrap().1.entry_views()[0].name, "Old");
+    }
+
+    #[test]
+    fn a_schema_1_vault_keeps_everything_through_the_upgrade() {
+        let _g = vault_test();
+        write_old_vault("password", Some(1), &schema_1_contents());
+
+        let (key, mut data) = unlock_vault("password").unwrap();
+        // An edit saves it as schema 2
+        mark_entry_used(&key, &mut data, "bank").unwrap();
+
+        let (_, reread) = unlock_vault("password").unwrap();
+        let e = reread.entry_views().remove(0);
+        assert_eq!((e.name.as_str(), e.password.as_str()), ("Bank", "pw2"));
+        assert_eq!(e.password_history[0].password, "pw1");
+        assert_eq!(e.password_history[0].replaced_at, 300);
+        assert_eq!(e.use_count, 5);
+        assert_eq!(reread.folder_views()[0].name, "Money");
+        assert!(reread.entries.is_deleted("gone"));
+    }
+
+    #[test]
+    fn a_schema_1_conflict_copy_from_a_device_not_yet_updated_merges_in() {
+        let _g = vault_test();
+        write_old_vault("password", Some(1), &schema_1_contents());
+        let (key, mut data) = unlock_vault("password").unwrap();
+        sample_entry(&key, &mut data, "Added after the upgrade", "pw");
+
+        // A device still on schema 1 changed the bank password offline
+        let mut theirs = schema_1_contents();
+        theirs["entries"][0]["password"] = "pw3".into();
+        theirs["entries"][0]["updated_at"] = 400.into();
+        theirs["entries"][0]["password_changed_at"] = 400.into();
+        theirs["entries"][0]["password_history"] = serde_json::json!([
+            { "password": "pw1", "replaced_at": 300 },
+            { "password": "pw2", "replaced_at": 400 }
+        ]);
+        let header = read_file();
+        let copy = serde_json::json!({
+            "version": 1,
+            "kdf": header.kdf,
+            "salt": header.salt,
+            "ciphertext": crypto::encrypt(theirs.to_string().as_bytes(), &key).unwrap(),
+        });
+        let copy_path = vault_path().unwrap().with_file_name("vault (old laptop's conflicted copy).enc");
+        fs::write(&copy_path, copy.to_string()).unwrap();
+
+        assert!(sync(&key, &mut data).unwrap());
+        assert!(!copy_path.exists());
+        let bank = data.entry_view("bank").unwrap();
+        assert_eq!(bank.password, "pw3");
+        let history: Vec<&str> = bank.password_history.iter().map(|p| p.password.as_str()).collect();
+        assert_eq!(history, ["pw1", "pw2"]);
+        assert_eq!(data.entry_views().len(), 2);
     }
 
     #[test]
@@ -1221,13 +1017,47 @@ mod tests {
         let _g = vault_test();
         create_vault("password").unwrap();
         let path = vault_path().unwrap();
-        let mut file: VaultFile =
-            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        file.version = CURRENT_VERSION + 1;
-        fs::write(&path, serde_json::to_string(&file).unwrap()).unwrap();
+        let original: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
 
-        let err = unlock_vault("password").unwrap_err();
-        assert!(err.contains("newer version"), "unexpected error: {err}");
+        // By the version builds before schema 2 read, or by the header
+        for (field, value) in [("version", CURRENT_VERSION + 1), ("schema", SCHEMA + 1), ("format", 99)] {
+            let mut file = original.clone();
+            file[field] = value.into();
+            fs::write(&path, file.to_string()).unwrap();
+            let err = unlock_vault("password").unwrap_err();
+            assert!(err.contains("newer version"), "{field}: unexpected error: {err}");
+        }
+
+        let mut other_app = original.clone();
+        other_app["app"] = "chronicle".into();
+        fs::write(&path, other_app.to_string()).unwrap();
+        assert!(unlock_vault("password").unwrap_err().contains("not a Vault file"));
+    }
+
+    #[test]
+    fn fields_from_a_newer_build_survive_a_save_from_this_one() {
+        let _g = vault_test();
+        create_vault("password").unwrap();
+        let (key, mut data) = unlock_vault("password").unwrap();
+        let entry = sample_entry(&key, &mut data, "Site", "pw");
+
+        // A newer build of Vault adds fields to the vault and to the entry
+        let (file, mut contents) = contents_on_disk(&key);
+        contents["breach_check"] = serde_json::json!({ "last_run": 123 });
+        contents["entries"]["records"][&entry.id]["passkey"] = serde_json::json!([[1, 0, 9], "key"]);
+        let rewritten = VaultFile {
+            ciphertext: crypto::encrypt(contents.to_string().as_bytes(), &key).unwrap(),
+            ..file
+        };
+        fs::write(vault_path().unwrap(), serde_json::to_string(&rewritten).unwrap()).unwrap();
+
+        // This build opens it, edits and saves
+        let (key, mut data) = unlock_vault("password").unwrap();
+        mark_entry_used(&key, &mut data, &entry.id).unwrap();
+
+        let (_, saved) = contents_on_disk(&key);
+        assert_eq!(saved["breach_check"], serde_json::json!({ "last_run": 123 }));
+        assert_eq!(saved["entries"]["records"][&entry.id]["passkey"], serde_json::json!([[1, 0, 9], "key"]));
     }
 
     /// Writes a vault at a deliberately cheap, non-default cost.
@@ -1239,6 +1069,7 @@ mod tests {
         let json = serde_json::to_vec(&VaultData::default()).unwrap();
         let file = VaultFile {
             version: CURRENT_VERSION,
+            header: Some(Header::new(APP, SCHEMA)),
             kdf,
             salt: base64::engine::general_purpose::STANDARD.encode(salt),
             ciphertext: crypto::encrypt(&json, &key).unwrap(),
@@ -1279,8 +1110,8 @@ mod tests {
         ).unwrap();
 
         let (_key2, data2) = unlock_vault("password").unwrap();
-        assert_eq!(data2.entries[0].username.as_deref(), Some("admin"));
-        assert!(data2.entries[0].email.is_empty());
+        assert_eq!(data2.entry_views()[0].username.as_deref(), Some("admin"));
+        assert!(data2.entry_views()[0].email.is_empty());
     }
 
     #[test]
@@ -1292,7 +1123,7 @@ mod tests {
 
         // What quick unlock does: same key, no password, no derivation
         let reopened = unlock_with_key(&key).unwrap();
-        assert_eq!(reopened.entries[0].name, "Quick");
+        assert_eq!(reopened.entry_views()[0].name, "Quick");
 
         let wrong = crypto::derive_key("other-password", &crypto::generate_salt()).unwrap();
         assert!(unlock_with_key(&wrong).is_err());
@@ -1322,120 +1153,11 @@ mod tests {
         mark_entry_used(&key, &mut data, &entry.id).unwrap();
 
         let (_key2, data2) = unlock_vault("password").unwrap();
-        assert_eq!(data2.entries[0].use_count, 2);
-        assert!(data2.entries[0].last_used_at.is_some());
+        assert_eq!(data2.entry_views()[0].use_count, 2);
+        assert!(data2.entry_views()[0].last_used_at.is_some());
     }
 
     // ── Sync ──────────────────────────────────────────────────────────────
-
-    fn entry_at(id: &str, name: &str, password: &str, updated_at: u64) -> Entry {
-        Entry {
-            id: id.into(),
-            name: name.into(),
-            kind: EntryKind::Login,
-            username: None,
-            email: "user@example.com".into(),
-            password: password.into(),
-            url: None,
-            notes: None,
-            folder_id: None,
-            totp_secret: None,
-            created_at: 1,
-            updated_at,
-            password_changed_at: Some(1),
-            password_history: Vec::new(),
-            last_used_at: None,
-            use_count: 0,
-        }
-    }
-
-    fn vault_of(entries: Vec<Entry>) -> VaultData {
-        VaultData { entries, folders: Vec::new(), deleted: Vec::new() }
-    }
-
-    fn reparse(data: &VaultData) -> VaultData {
-        serde_json::from_slice(&serde_json::to_vec(data).unwrap()).unwrap()
-    }
-
-    #[test]
-    fn merging_keeps_edits_from_both_sides_whichever_way_round() {
-        let a = vault_of(vec![entry_at("1", "Old name", "pw", 10), entry_at("2", "Only on A", "pw", 10)]);
-        let b = vault_of(vec![entry_at("1", "New name", "pw", 20), entry_at("3", "Only on B", "pw", 10)]);
-
-        let mut ab = reparse(&a);
-        merge(&mut ab, reparse(&b));
-        let mut ba = reparse(&b);
-        merge(&mut ba, reparse(&a));
-
-        assert_eq!(*canonical(&ab), *canonical(&ba));
-        assert_eq!(ab.entries.len(), 3);
-        assert_eq!(ab.entries.iter().find(|e| e.id == "1").unwrap().name, "New name");
-
-        // Merging the same copy again changes nothing
-        let before = canonical(&ab);
-        merge(&mut ab, reparse(&b));
-        assert_eq!(*canonical(&ab), *before);
-    }
-
-    #[test]
-    fn a_password_rotation_survives_a_later_edit_on_another_device() {
-        // A rotated the password at t=100; B, not having seen that, edited
-        // the notes at t=200
-        let mut a = entry_at("1", "Site", "new-pw", 100);
-        a.password_changed_at = Some(100);
-        a.password_history.push(PastPassword { password: "old-pw".into(), replaced_at: 100 });
-        let mut b = entry_at("1", "Site", "old-pw", 200);
-        b.notes = Some("edited on B".into());
-
-        let mut merged = vault_of(vec![a]);
-        merge(&mut merged, vault_of(vec![b]));
-        let e = &merged.entries[0];
-        assert_eq!(e.password, "new-pw");
-        assert_eq!(e.notes.as_deref(), Some("edited on B"));
-        assert_eq!(e.password_history.len(), 1);
-    }
-
-    #[test]
-    fn two_rotations_keep_the_losing_password_in_history() {
-        let mut a = entry_at("1", "Site", "from-a", 100);
-        a.password_changed_at = Some(100);
-        let mut b = entry_at("1", "Site", "from-b", 150);
-        b.password_changed_at = Some(150);
-
-        let mut merged = vault_of(vec![a]);
-        merge(&mut merged, vault_of(vec![b]));
-        let e = &merged.entries[0];
-        assert_eq!(e.password, "from-b");
-        assert!(e.password_history.iter().any(|p| p.password == "from-a"));
-    }
-
-    #[test]
-    fn a_delete_beats_earlier_edits_but_not_later_ones() {
-        let mut deleted_here = vault_of(vec![]);
-        deleted_here.deleted.push(Tombstone { id: "1".into(), deleted_at: 50 });
-        deleted_here.deleted.push(Tombstone { id: "2".into(), deleted_at: 50 });
-
-        let elsewhere = vault_of(vec![entry_at("1", "Stale", "pw", 40), entry_at("2", "Edited after", "pw", 60)]);
-        merge(&mut deleted_here, elsewhere);
-
-        let names: Vec<&str> = deleted_here.entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, vec!["Edited after"]);
-    }
-
-    #[test]
-    fn a_folder_deleted_elsewhere_unfiles_its_entries() {
-        let mut filed = entry_at("1", "Filed", "pw", 10);
-        filed.folder_id = Some("f".into());
-        let mut here = vault_of(vec![filed]);
-        here.folders.push(Folder { id: "f".into(), name: "Work".into(), updated_at: 5 });
-
-        let mut there = vault_of(vec![]);
-        there.deleted.push(Tombstone { id: "f".into(), deleted_at: 20 });
-        merge(&mut here, there);
-
-        assert!(here.folders.is_empty());
-        assert_eq!(here.entries[0].folder_id, None);
-    }
 
     #[test]
     fn sync_merges_another_devices_write_and_a_conflict_copy() {
@@ -1443,7 +1165,7 @@ mod tests {
         create_vault("password").unwrap();
         let (key, mut a) = unlock_vault("password").unwrap();
         sample_entry(&key, &mut a, "From A", "1");
-        let a_seen = LAST_SEEN.lock().unwrap().clone();
+        let a_seen = STORE.lock().unwrap().take();
 
         // Device B writes the main file through the sync client...
         let (_, mut b) = unlock_vault("password").unwrap();
@@ -1451,19 +1173,18 @@ mod tests {
 
         // ...and device C's offline edit arrives as a conflict copy
         let (_, mut c) = unlock_vault("password").unwrap();
-        c.entries.push(entry_at("c", "From C", "3", now_secs()));
+        c.add_entry("c".into(), fields("From C", "3"), now()).unwrap();
         let path = vault_path().unwrap();
-        let (_, header) = read_vault_file_at(&path).unwrap();
         let copy = path.with_file_name("vault (C's conflicted copy).enc");
-        write_data(&copy, &header, &key, &c).unwrap();
+        write_copy(&copy, &key, &c);
         let backup = path.with_file_name("vault-backup.enc");
         fs::write(&backup, "an export, not a conflict").unwrap();
 
         // Back on device A
-        *LAST_SEEN.lock().unwrap() = a_seen;
+        *STORE.lock().unwrap() = a_seen;
         assert!(sync(&key, &mut a).unwrap());
 
-        let mut names: Vec<&str> = a.entries.iter().map(|e| e.name.as_str()).collect();
+        let mut names: Vec<String> = a.entry_views().iter().map(|e| e.name.clone()).collect();
         names.sort();
         assert_eq!(names, vec!["From A", "From B", "From C"]);
         assert!(!copy.exists());
@@ -1471,7 +1192,7 @@ mod tests {
         assert!(!sync(&key, &mut a).unwrap(), "a second sync has nothing to do");
 
         let (_, reread) = unlock_vault("password").unwrap();
-        assert_eq!(reread.entries.len(), 3);
+        assert_eq!(reread.entry_views().len(), 3);
         let _ = fs::remove_file(&backup);
     }
 
@@ -1480,12 +1201,12 @@ mod tests {
         let _g = vault_test();
         create_vault("password").unwrap();
         let (key, mut a) = unlock_vault("password").unwrap();
-        let a_seen = LAST_SEEN.lock().unwrap().clone();
+        let a_seen = STORE.lock().unwrap().take();
 
         let (_, mut b) = unlock_vault("password").unwrap();
         change_master_password("password", "changed-elsewhere", &mut b).unwrap();
 
-        *LAST_SEEN.lock().unwrap() = a_seen;
+        *STORE.lock().unwrap() = a_seen;
         let err = add_entry(
             &key, &mut a, "Late".into(), None, "a@b.com".into(), "pw".into(),
             None, None, None, None,
@@ -1519,7 +1240,7 @@ mod tests {
         assert_eq!(vault_path().unwrap(), synced.join("vault.enc"));
         assert!(home.join("vault.enc.pre-sync").exists());
         let (_, joined) = unlock_vault("their-password").unwrap();
-        let mut names: Vec<&str> = joined.entries.iter().map(|e| e.name.as_str()).collect();
+        let mut names: Vec<String> = joined.entry_views().iter().map(|e| e.name.clone()).collect();
         names.sort();
         assert_eq!(names, vec!["Local", "Remote"]);
 
@@ -1546,7 +1267,7 @@ mod tests {
         move_vault_home(&home).unwrap();
         assert_eq!(vault_path().unwrap(), home.join("vault.enc"));
         let (_, back) = unlock_vault("password").unwrap();
-        assert_eq!(back.entries.len(), 2);
+        assert_eq!(back.entry_views().len(), 2);
 
         let _ = fs::remove_dir_all(&synced);
         let _ = fs::remove_file(home.join("vault.enc.pre-sync"));

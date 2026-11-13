@@ -5,9 +5,17 @@ name: iOS build
 # only: macOS runner minutes are expensive, and a weekly AltStore refresh
 # re-signs the installed app without needing a new build. The push trigger
 # builds ios-dev whenever app code or this workflow changes (the manual
-# button only appears for workflows on the default branch).
+# button only appears for workflows on the default branch). release.yaml
+# also calls it for every version tag and attaches the .ipa to the release.
 
 on:
+  workflow_call:
+    inputs:
+      version:
+        description: "App version to stamp into the build (e.g. 1.0.1)"
+        type: string
+        required: false
+        default: ""
   workflow_dispatch:
   push:
     branches: [ios-dev]
@@ -54,6 +62,18 @@ jobs:
         run: |
           npm ci
           brew install xcodegen ldid
+
+      # Releases stamp the tag's version in, as release.yaml does for the
+      # desktop builds; the Xcode project picks it up from tauri.conf.json.
+      - name: Set app version
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > src-tauri/tauri.conf.json.tmp
+          mv src-tauri/tauri.conf.json.tmp src-tauri/tauri.conf.json
+          sed -i.bak "1,/^version = /s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
+          rm -f src-tauri/Cargo.toml.bak
 
       # src-tauri/gen/apple can only be generated on macOS, so it is created
       # here when the repo doesn't carry it. Info.ios.plist is merged in.
