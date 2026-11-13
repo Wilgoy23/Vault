@@ -12,6 +12,7 @@
 // passcode. AutoFill is "enabled" exactly when that snapshot file exists.
 
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use zeroize::Zeroizing;
 
 use crate::vault::VaultData;
@@ -77,11 +78,26 @@ pub fn publish(data: &VaultData) -> Result<(), String> {
     }
 }
 
+/// Whether the active vault is the one AutoFill shows. The extension holds a
+/// single snapshot, so with several vaults on the device only the one it was
+/// turned on from keeps it current; the others must not overwrite it.
+static ACTIVE_IS_SOURCE: AtomicBool = AtomicBool::new(true);
+
+/// Set at startup and on every vault switch, from the vault list.
+pub fn set_active_is_source(yes: bool) {
+    ACTIVE_IS_SOURCE.store(yes, Ordering::Relaxed);
+}
+
+pub fn active_is_source() -> bool {
+    ACTIVE_IS_SOURCE.load(Ordering::Relaxed)
+}
+
 /// Keeps AutoFill in step after an unlock or a vault write. A no-op unless
-/// the user turned it on. Errors are logged, not returned: the vault write
-/// they follow has already succeeded and must not be reported as failed.
+/// the user turned it on for this vault. Errors are logged, not returned: the
+/// vault write they follow has already succeeded and must not be reported as
+/// failed.
 pub fn refresh(data: &VaultData) {
-    if is_enabled() {
+    if active_is_source() && is_enabled() {
         if let Err(e) = publish(data) {
             eprintln!("AutoFill refresh failed: {e}");
         }
