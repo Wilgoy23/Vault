@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { Palette, Shield, Monitor, Database, X, Keyboard, FolderSync } from "lucide-react";
+import { Palette, Shield, Monitor, Database, X, Keyboard, FolderSync, Vault } from "lucide-react";
 import { THEMES, Theme } from "../themes";
-import { exportVault, importVault, importCsv, enableAutostart, disableAutostart, changeMasterPassword, autofillStatus, setAutofillEnabled, syncStatus, chooseSyncFolder, joinSyncFolder, stopSync, SyncStatus } from "../api";
+import { exportVault, importVault, importCsv, enableAutostart, disableAutostart, changeMasterPassword, autofillStatus, setAutofillEnabled, syncStatus, chooseSyncFolder, joinSyncFolder, stopSync, SyncStatus, switchVault, addVault, renameVault, removeVault } from "../api";
 import MasterPasswordMeter from "./MasterPasswordMeter";
 import ConfirmDialog from "./ConfirmDialog";
 import { useIsMobile } from "../utils/platform";
+import { useVaultList } from "../utils/useVaultList";
 
 const TIMEOUT_OPTIONS = [
   { label: "1 min",  ms: 1 * 60 * 1000 },
@@ -31,6 +32,8 @@ interface Props {
   onShortcutChange: (s: string) => Promise<void>;
   onImported: () => void;
   onCsvImported: () => void;
+  /** Runs before a switch locks this vault, to write anything pending */
+  onBeforeVaultChange: () => Promise<void>;
   onClose: () => void;
 }
 
@@ -41,7 +44,7 @@ export default function SettingsModal({
   lockOnSystem, onLockOnSystemChange,
   helloAvailable, helloEnabled, onHelloChange,
   shortcut, onShortcutChange,
-  onImported, onCsvImported, onClose,
+  onImported, onCsvImported, onBeforeVaultChange, onClose,
 }: Props) {
   const handleAutostartToggle = async () => {
     try {
@@ -64,7 +67,9 @@ export default function SettingsModal({
     }
   };
 
-  const [autofill, setAutofill] = useState({ supported: false, enabled: false });
+  const [autofill, setAutofill] = useState<{ supported: boolean; enabled: boolean; other_vault: string | null }>(
+    { supported: false, enabled: false, other_vault: null },
+  );
   const [autofillError, setAutofillError] = useState("");
 
   useEffect(() => {
@@ -76,7 +81,8 @@ export default function SettingsModal({
     const enabled = !autofill.enabled;
     try {
       await setAutofillEnabled(enabled);
-      setAutofill({ ...autofill, enabled });
+      // Turning it on here takes it from whichever vault had it
+      setAutofill({ ...autofill, enabled, other_vault: null });
     } catch (e: any) {
       setAutofillError(e?.toString() || "AutoFill could not be set up.");
     }
@@ -201,6 +207,11 @@ export default function SettingsModal({
                       Also turn on Vault in iOS Settings → General → AutoFill &amp; Passwords
                     </span>
                   )}
+                  {autofill.other_vault && !autofillError && (
+                    <span style={{ fontSize: "11px", opacity: 0.7, textAlign: "right" }}>
+                      AutoFill shows &ldquo;{autofill.other_vault}&rdquo;. Turning it on here switches it to this vault.
+                    </span>
+                  )}
                 </div>
               </Row>
             )}
@@ -247,6 +258,8 @@ export default function SettingsModal({
           </Section>
 
           <SyncSection />
+
+          <VaultsSection beforeChange={onBeforeVaultChange} />
 
         </div>
       </div>
@@ -372,6 +385,157 @@ function SyncSection() {
             : "Keep your vault in a folder that OneDrive, Dropbox, iCloud Drive or Syncthing syncs, then choose the same folder on your other computers. Vault merges changes from each device. Only the encrypted file leaves this one."}
         </p>
       </Section>
+    </>
+  );
+}
+
+/** The vaults on this device: rename or remove the open one, switch to
+ *  another, or add one. Switching and adding lock this vault. */
+function VaultsSection({ beforeChange }: { beforeChange: () => Promise<void> }) {
+  const list = useVaultList();
+  const [renaming, setRenaming] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  if (!list) return null;
+  const active = list.vaults.find((v) => v.id === list.active);
+  const others = list.vaults.filter((v) => v.id !== list.active);
+
+  const run = async (action: () => Promise<void>) => {
+    setError("");
+    setBusy(true);
+    try { await action(); }
+    catch (e: any) { setError(e?.toString() ?? "Something went wrong."); }
+    finally { setBusy(false); }
+  };
+
+  const closeForm = () => { setRenaming(false); setAdding(false); setName(""); setError(""); };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    run(async () => {
+      if (renaming) {
+        await renameVault(list.active, name);
+      } else {
+        await beforeChange();
+        await addVault(name);
+      }
+      closeForm();
+    });
+  };
+
+  const handleSwitch = (id: string) => run(async () => {
+    await beforeChange();
+    await switchVault(id);
+  });
+
+  const handleRemove = () => {
+    setConfirmRemove(false);
+    run(async () => {
+      await beforeChange();
+      await removeVault(list.active);
+    });
+  };
+
+  const small: React.CSSProperties = { fontSize: "13px", padding: "6px 14px" };
+  const hint: React.CSSProperties = { fontSize: "11px", color: "var(--muted-dim)", lineHeight: 1.5, margin: "-4px 0 0" };
+
+  return (
+    <>
+      <Divider />
+      <Section icon={<Vault size={13} strokeWidth={2} />} label="Vaults">
+        <Row label={active ? `Open: ${active.name}` : "Open vault"}>
+          <button
+            className="btn-ghost"
+            style={small}
+            onClick={() => { closeForm(); setRenaming(true); setName(active?.name ?? ""); }}
+            disabled={busy}
+          >
+            Rename
+          </button>
+        </Row>
+
+        {others.map((v) => (
+          <Row key={v.id} label={v.exists ? v.name : `${v.name} (not set up)`}>
+            <button className="btn-ghost" style={small} onClick={() => handleSwitch(v.id)} disabled={busy}>
+              Switch
+            </button>
+          </Row>
+        ))}
+
+        {(renaming || adding) ? (
+          <form
+            onSubmit={handleSubmit}
+            style={{
+              display: "flex", flexDirection: "column", gap: "10px",
+              padding: "14px", marginBottom: "12px",
+              background: "rgba(255,255,255,0.03)",
+              border: "1px solid var(--border-dim)", borderRadius: "var(--r-md)",
+            }}
+          >
+            {adding && (
+              <p style={{ fontSize: "12.5px", lineHeight: 1.5, margin: 0 }}>
+                A new vault has its own master password and entries. This vault locks, and
+                you set the new one's password next.
+              </p>
+            )}
+            <input
+              placeholder={adding ? "Name, e.g. Work" : "Vault name"}
+              value={name}
+              onChange={(e) => { setName(e.target.value); setError(""); }}
+              maxLength={40}
+              autoFocus
+            />
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button type="submit" className="btn-primary" disabled={busy || !name.trim()} style={{ flex: 1, fontSize: "13px", padding: "8px" }}>
+                {renaming ? "Save name" : "Add and switch"}
+              </button>
+              <button type="button" className="btn-ghost" onClick={closeForm} style={{ fontSize: "13px", padding: "8px 14px" }}>
+                Cancel
+              </button>
+            </div>
+          </form>
+        ) : (
+          <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
+            <button className="btn-ghost" style={small} onClick={() => { closeForm(); setAdding(true); }} disabled={busy}>
+              Add vault…
+            </button>
+            {others.length > 0 && (
+              <button
+                className="btn-ghost"
+                style={{ ...small, color: "var(--danger)" }}
+                onClick={() => setConfirmRemove(true)}
+                disabled={busy}
+              >
+                Remove this vault…
+              </button>
+            )}
+          </div>
+        )}
+
+        {error && <p className="error" style={{ margin: "0 0 12px", fontSize: "12px" }}>{error}</p>}
+
+        <p style={hint}>
+          Each vault has its own master password, so people sharing this device keep their
+          passwords apart. Only one vault is open at a time.
+        </p>
+      </Section>
+
+      {confirmRemove && active && (
+        <ConfirmDialog
+          title={`Remove “${active.name}”?`}
+          message={active.synced
+            ? "This deletes the vault from this device. The copy in your sync folder stays there for your other devices. Export a backup first if you might want it here again."
+            : "This permanently deletes the vault and every entry in it from this device. Export a backup first if you might need it again."}
+          confirmLabel="Remove vault"
+          danger
+          onConfirm={handleRemove}
+          onCancel={() => setConfirmRemove(false)}
+        />
+      )}
     </>
   );
 }

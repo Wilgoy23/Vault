@@ -13,6 +13,43 @@ export const unlock = (password: string) =>
 export const lock = () =>
   invoke<void>("lock");
 
+/** Several vaults on one device, each with its own master password. One is
+ *  active at a time, and every other call here works on it. Switching,
+ *  adding and removing the open vault lock it first; the backend then emits
+ *  "vault-locked" and "vault-switched". Any change to the list, renames
+ *  included, emits "vault-list-changed". */
+export interface VaultSummary {
+  id: string;
+  name: string;
+  /** False until a master password has been set for it */
+  exists: boolean;
+  synced: boolean;
+}
+
+export interface VaultList {
+  active: string;
+  vaults: VaultSummary[];
+}
+
+export const listVaults = () =>
+  invoke<VaultList>("list_vaults");
+
+export const switchVault = (id: string) =>
+  invoke<void>("switch_vault", { id });
+
+/** Lists a new vault and switches to it; resolves to its id. */
+export const addVault = (name: string) =>
+  invoke<string>("add_vault", { name });
+
+/** Only the open vault can be renamed. */
+export const renameVault = (id: string, name: string) =>
+  invoke<void>("rename_vault", { id, name });
+
+/** Deletes this device's copy. Needs that vault open, unless it was never
+ *  given a password. */
+export const removeVault = (id: string) =>
+  invoke<void>("remove_vault", { id });
+
 export const changeMasterPassword = (currentPassword: string, newPassword: string) =>
   invoke<void>("change_master_password", { currentPassword, newPassword });
 
@@ -39,7 +76,13 @@ export const disarmQuickUnlock = () =>
  *  lack the App Group the extension reads from. Enabling needs the vault
  *  open; after that the backend keeps it current on every unlock and save. */
 export const autofillStatus = () =>
-  invoke<{ supported: boolean; enabled: boolean }>("autofill_status");
+  invoke<{
+    supported: boolean;
+    /** On, and showing this vault's logins */
+    enabled: boolean;
+    /** On for another vault; AutoFill shows one vault at a time */
+    other_vault: string | null;
+  }>("autofill_status");
 
 export const setAutofillEnabled = (enabled: boolean) =>
   invoke<void>("set_autofill_enabled", { enabled });
