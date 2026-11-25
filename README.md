@@ -19,6 +19,7 @@ A local, end-to-end encrypted password manager built with Tauri 2, React, and Ru
 - **Configurable overlay shortcut** — change the global keybind in Settings → Shortcuts; persisted across restarts
 - **Auto-lock** — configurable inactivity timeout (1 min to 1 hour, or never)
 - **Clipboard auto-clear** — copied secrets are wiped from the clipboard after 30 seconds via a system-level clear (no blank history entry added)
+- **Multiple vaults** — people sharing a device each keep their own vault with its own master password and sync folder; switch from the lock screen, the title bar or Settings, and switching always locks the open vault first
 - **Folders** — organise entries into folders with rename and delete support
 - **Themes** — multiple colour themes switchable from Settings
 - **Autostart** — optional launch on system boot

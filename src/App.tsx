@@ -105,6 +105,9 @@ export default function App() {
   const [shortcut, setShortcut] = useState("Ctrl+Shift+P");
   // Why the vault was locked, when it wasn't the user's doing
   const [lockNotice, setLockNotice] = useState("");
+  // Bumped when another vault becomes active, so the lock screen starts over
+  // for it (whether it exists yet, Hello, its sync folder)
+  const [vaultGeneration, setVaultGeneration] = useState(0);
 
   useEffect(() => {
     getOverlayShortcut().then(setShortcut).catch(() => {});
@@ -184,10 +187,17 @@ export default function App() {
     const unlistenLocked = listen("vault-locked", () => setScreen("lock"));
     // The master password was changed on another device
     const unlistenSyncError = listen<string>("vault-sync-error", (e) => setLockNotice(e.payload));
+    // Always follows a "vault-locked"; a notice was about the vault left behind
+    const unlistenSwitched = listen("vault-switched", () => {
+      setLockNotice("");
+      setVaultGeneration((g) => g + 1);
+      setScreen("lock");
+    });
     return () => {
       unlistenUnlocked.then((f) => f());
       unlistenLocked.then((f) => f());
       unlistenSyncError.then((f) => f());
+      unlistenSwitched.then((f) => f());
     };
   }, []);
 
@@ -206,7 +216,7 @@ export default function App() {
     return (
       <>
         {!isMobile && <ContextMenu />}
-        <LockScreen notice={lockNotice} onUnlocked={() => { setLockNotice(""); setScreen("main"); }} />
+        <LockScreen key={vaultGeneration} notice={lockNotice} onUnlocked={() => { setLockNotice(""); setScreen("main"); }} />
       </>
     );
   }

@@ -12,6 +12,8 @@ import AddEntryModal from "./AddEntryModal";
 import SettingsModal from "./SettingsModal";
 import SecurityView from "./SecurityView";
 import UndoToast from "./UndoToast";
+import VaultPicker from "./VaultPicker";
+import { useVaultList } from "../utils/useVaultList";
 
 const UNDO_WINDOW_MS = 5000;
 
@@ -57,6 +59,7 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
   const pendingDelete = useRef<PendingDelete | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const isMobile = useIsMobile();
+  const vaults = useVaultList();
 
   // Android's back button dismisses one layer at a time, innermost first,
   // rather than dropping the user out of the app.
@@ -306,6 +309,7 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
             shortcut={shortcut}
             onShortcutChange={onShortcutChange}
             onImported={() => { setShowSettings(false); onLocked(); }}
+            onBeforeVaultChange={commitPendingDelete}
             onCsvImported={() => { listEntries().then(setEntries); listFolders().then(setFolders); }}
             onClose={() => setShowSettings(false)}
           />
@@ -418,6 +422,15 @@ export default function MainWindow({ onLocked, timeoutMs, onTimeoutChange, theme
           <span style={{ fontWeight: 700, fontSize: "14px", letterSpacing: "-0.025em", color: "var(--text)" }}>
             Vault
           </span>
+          {/* Which vault is open, once there is more than one to mix up */}
+          {vaults && vaults.vaults.length > 1 && (
+            <VaultPicker
+              list={vaults}
+              placement="titlebar"
+              beforeChange={commitPendingDelete}
+              onError={(m) => window.alert(m)}
+            />
+          )}
         </div>
         <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
           <button

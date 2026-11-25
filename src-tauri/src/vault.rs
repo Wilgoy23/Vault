@@ -21,10 +21,9 @@ use folder_crdt::vault::file::{self as vault_file, FileCodec};
 use folder_crdt::vault::Fields;
 use folder_crdt::{Cipher, FolderStore, Hlc, HlcClock, KeyMismatch, Merge, Store, StoreError};
 
-/// On mobile, the vault directory is set at startup from Tauri's
-/// app-data path (the iOS/Android app sandbox). Desktop keeps the
-/// historical `<config_dir>/vault/` location so existing vaults load,
-/// unless the user has moved the vault into a sync folder.
+/// The active vault's folder, set at startup and whenever the user switches
+/// vaults (registry.rs keeps the list). Falls back on desktop to the
+/// historical `<config_dir>/vault/`, where the first vault lives.
 static VAULT_DIR: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
 
 /// Points the vault at `dir`: the app sandbox on mobile, a sync folder on
@@ -33,7 +32,8 @@ pub fn set_vault_dir(dir: PathBuf) {
     *VAULT_DIR.write().unwrap() = Some(dir);
 }
 
-/// Where the vault lives when it is not in a sync folder.
+/// Where the first vault on a desktop has always lived. Vaults added since
+/// get folders of their own (see registry.rs).
 #[cfg(desktop)]
 pub fn default_vault_dir() -> Result<PathBuf, String> {
     let mut dir = dirs::config_dir().ok_or("Could not determine the system config directory")?;
@@ -212,6 +212,13 @@ fn open_store(cipher: VaultCipher) -> Result<VaultData, String> {
     observe(&data);
     *STORE.lock().unwrap() = Some(store);
     Ok(data)
+}
+
+/// Forgets the open store, and with it the copy of the session key its
+/// cipher holds. Called on lock, so the key really leaves memory, and before
+/// switching to another vault.
+pub fn close_store() {
+    *STORE.lock().unwrap() = None;
 }
 
 /// Runs `f` on the store for the vault folder, under `key`. Rebuilt when the

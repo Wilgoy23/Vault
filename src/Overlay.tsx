@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit, listen } from "@tauri-apps/api/event";
 import { Eye, EyeOff, ArrowLeft, AppWindow } from "lucide-react";
 import { isUnlocked, listEntries, unlock, writeClipboardText, scheduleClipboardClear, markEntryUsed, openMainWindow } from "./api";
+import { useVaultList } from "./utils/useVaultList";
 import { Entry } from "./types";
 import { generateTOTP, totpSecondsLeft } from "./utils/totp";
 import { applyTheme, DEFAULT_THEME_ID } from "./themes";
@@ -337,6 +338,10 @@ export default function Overlay() {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [selectedEntry, setSelectedEntry] = useState<Entry | null>(null);
   const [locked, setLocked] = useState(false);
+  const vaults = useVaultList();
+  const activeVaultName = vaults && vaults.vaults.length > 1
+    ? vaults.vaults.find((v) => v.id === vaults.active)?.name
+    : undefined;
   const [password, setPassword] = useState("");
   const [unlockError, setUnlockError] = useState("");
   const [unlocking, setUnlocking] = useState(false);
@@ -460,7 +465,10 @@ export default function Overlay() {
           display: "flex", flexDirection: "column", alignItems: "center",
           justifyContent: "center", flex: 1, padding: "24px", gap: "12px",
         }}>
-          <div style={{ fontSize: "14px", fontWeight: 500, marginBottom: "4px" }}>Vault is locked</div>
+          <div style={{ fontSize: "14px", fontWeight: 500, marginBottom: "4px" }}>
+            {/* Say which, once there are several the password could be for */}
+            {activeVaultName ? `“${activeVaultName}” is locked` : "Vault is locked"}
+          </div>
           <form onSubmit={handleUnlock} style={{ display: "flex", flexDirection: "column", gap: "8px", width: "100%" }}>
             <input
               ref={passwordRef}

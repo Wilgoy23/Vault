@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { ShieldCheck, Lock, Eye, EyeOff, Check, Fingerprint, FolderSync, Upload, FileSpreadsheet, X, ChevronDown } from "lucide-react";
-import { createVault, unlock, vaultExists, quickUnlockArmed, quickUnlock, syncStatus, openSyncedVault, importVault, stageCsvImport, clearStagedCsvImport, applyStagedCsvImport, SyncStatus } from "../api";
+import { createVault, unlock, vaultExists, quickUnlockArmed, quickUnlock, syncStatus, openSyncedVault, importVault, stageCsvImport, clearStagedCsvImport, applyStagedCsvImport, SyncStatus, removeVault } from "../api";
 import MasterPasswordMeter from "./MasterPasswordMeter";
+import VaultPicker from "./VaultPicker";
+import { useVaultList } from "../utils/useVaultList";
 
 interface Props {
   /** Shown above the form, e.g. why the vault was locked */
@@ -23,6 +25,9 @@ export default function LockScreen({ notice, onUnlocked }: Props) {
   const [stagedCsv, setStagedCsv] = useState<number | null>(null);
   // First-run extras (import, sync folder) stay tucked away until asked for
   const [showMore, setShowMore] = useState(false);
+  // Every vault on this device. App remounts this screen when the active one
+  // changes, which resets everything else here.
+  const vaults = useVaultList();
 
   useEffect(() => {
     vaultExists().then((exists) => setIsNew(!exists));
@@ -120,7 +125,20 @@ export default function LockScreen({ notice, onUnlocked }: Props) {
     }
   };
 
+  // Backs out of a vault just added from the picker, before it has a password
+  const handleDiscardNew = async () => {
+    if (!vaults) return;
+    try { await removeVault(vaults.active); }
+    catch (err: any) { setError(err?.toString() ?? "Could not remove the vault."); }
+  };
+
   if (isNew === null) return null;
+
+  const several = (vaults?.vaults.length ?? 0) > 1;
+  const activeName = vaults?.vaults.find((v) => v.id === vaults.active)?.name;
+  // A first run with nothing else on the device stays as it always was; the
+  // picker appears once there is a vault to unlock or another to choose
+  const showPicker = vaults !== null && (several || !isNew);
 
   return (
     // margin:auto on the card centres it but, unlike align-items:center,
@@ -131,6 +149,8 @@ export default function LockScreen({ notice, onUnlocked }: Props) {
         borderRadius: "var(--radius-lg)", padding: "40px", width: "min(360px, calc(100vw - 24px))",
         boxShadow: "0 8px 48px rgba(0,0,0,0.5), 0 0 80px rgba(30,80,200,0.12)",
       }}>
+        {showPicker && vaults && <VaultPicker list={vaults} onError={setError} />}
+
         {/* Icon + title */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: "28px", gap: "12px" }}>
           <div style={{
@@ -147,7 +167,9 @@ export default function LockScreen({ notice, onUnlocked }: Props) {
           </div>
           <div style={{ textAlign: "center" }}>
             <h1 style={{ fontSize: "19px", fontWeight: 600, marginBottom: "5px" }}>
-              {isNew ? "Create your vault" : "Unlock your vault"}
+              {isNew
+                ? (several && activeName ? `Set up “${activeName}”` : "Create your vault")
+                : "Unlock your vault"}
             </h1>
             <p style={{ color: "var(--muted)", fontSize: "13px", lineHeight: 1.5 }}>
               {isNew
@@ -308,6 +330,18 @@ export default function LockScreen({ notice, onUnlocked }: Props) {
                   <Upload size={15} strokeWidth={2} />
                   Import a vault backup…
                 </button>
+
+                {several && (
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    onClick={handleDiscardNew}
+                    style={optionStyle}
+                  >
+                    <X size={15} strokeWidth={2} />
+                    Don't add this vault
+                  </button>
+                )}
 
                 {stagedCsv === null && (
                   <button

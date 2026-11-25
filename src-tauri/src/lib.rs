@@ -11,8 +11,10 @@ mod crypto;
 mod csv_import;
 #[cfg(all(desktop, target_os = "windows"))]
 mod hello;
+mod registry;
 mod vault;
 
+use registry::Registry;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
@@ -235,6 +237,8 @@ fn lock_and_notify(app: &tauri::AppHandle) {
         // Dropping these zeroizes the key and all decrypted entries
         s.key = None;
         s.data = None;
+        // The store's cipher holds a copy of the key too
+        vault::close_store();
     }
     let _ = app.emit("vault-locked", ());
 }
@@ -255,8 +259,15 @@ struct ArmedQuickUnlock {
     wrapped_key: String,
 }
 
+/// Wrapped keys by vault id: each vault's key opens only that vault, and
+/// switching away and back shouldn't cost the user their Hello unlock.
 #[cfg(all(desktop, target_os = "windows"))]
-struct QuickUnlock(Mutex<Option<ArmedQuickUnlock>>);
+struct QuickUnlock(Mutex<std::collections::HashMap<String, ArmedQuickUnlock>>);
+
+/// The id of the vault the lock screen and every command work on.
+fn active_vault_id(app: &tauri::AppHandle) -> Option<String> {
+    app.try_state::<Vaults>().map(|v| v.lock().unwrap().active.clone())
+}
 
 /// Whether this machine can do Hello at all. The UI hides the option when not.
 #[tauri::command]
@@ -272,10 +283,10 @@ fn quick_unlock_available() -> bool {
 #[tauri::command]
 fn quick_unlock_armed(_app: tauri::AppHandle) -> bool {
     #[cfg(all(desktop, target_os = "windows"))]
-    return _app
-        .try_state::<QuickUnlock>()
-        .map(|s| s.0.lock().unwrap().is_some())
-        .unwrap_or(false);
+    return match (_app.try_state::<QuickUnlock>(), active_vault_id(&_app)) {
+        (Some(s), Some(id)) => s.0.lock().unwrap().contains_key(&id),
+        _ => false,
+    };
     #[cfg(not(all(desktop, target_os = "windows")))]
     false
 }
@@ -288,10 +299,12 @@ async fn arm_quick_unlock(_app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(all(desktop, target_os = "windows"))]
     {
         let state = _app.try_state::<VaultState>().ok_or("Vault is locked")?;
-        let key = {
+        let (vault_id, key) = {
             let s = state.lock().unwrap();
             let key = s.key.as_deref().ok_or("Vault is locked")?;
-            Zeroizing::new(*key)
+            // Read under the session lock, so a switch can't slip in between
+            let id = active_vault_id(&_app).ok_or("Vault is locked")?;
+            (id, Zeroizing::new(*key))
         };
 
         let mut challenge = [0u8; 32];
@@ -304,7 +317,7 @@ async fn arm_quick_unlock(_app: tauri::AppHandle) -> Result<(), String> {
         let wrapped_key = crypto::encrypt(&key[..], &wrapping_key)?;
 
         let armed = _app.try_state::<QuickUnlock>().ok_or("Quick unlock unavailable")?;
-        *armed.0.lock().unwrap() = Some(ArmedQuickUnlock { challenge, wrapped_key });
+        armed.0.lock().unwrap().insert(vault_id, ArmedQuickUnlock { challenge, wrapped_key });
         Ok(())
     }
     #[cfg(not(all(desktop, target_os = "windows")))]
@@ -318,9 +331,10 @@ async fn quick_unlock(_app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(all(desktop, target_os = "windows"))]
     {
         let armed = _app.try_state::<QuickUnlock>().ok_or("Quick unlock unavailable")?;
+        let vault_id = active_vault_id(&_app).ok_or("Vault is unavailable")?;
         let (challenge, wrapped_key) = {
             let guard = armed.0.lock().unwrap();
-            let a = guard.as_ref().ok_or("Quick unlock is not set up")?;
+            let a = guard.get(&vault_id).ok_or("Quick unlock is not set up")?;
             (a.challenge, a.wrapped_key.clone())
         };
 
@@ -360,7 +374,7 @@ fn disarm_quick_unlock(_app: tauri::AppHandle) {
     #[cfg(all(desktop, target_os = "windows"))]
     {
         if let Some(armed) = _app.try_state::<QuickUnlock>() {
-            *armed.0.lock().unwrap() = None;
+            armed.0.lock().unwrap().clear();
         }
         hello::forget();
     }
@@ -374,27 +388,48 @@ fn disarm_quick_unlock(_app: tauri::AppHandle) {
 #[derive(serde::Serialize)]
 struct AutofillStatus {
     supported: bool,
+    /// On, and showing this vault's logins
     enabled: bool,
+    /// On, but showing another vault's; turning it on here moves it
+    other_vault: Option<String>,
 }
 
 #[tauri::command]
-fn autofill_status() -> AutofillStatus {
+fn autofill_status(_vaults: State<'_, Vaults>) -> AutofillStatus {
     #[cfg(target_os = "ios")]
-    return AutofillStatus {
-        supported: autofill::is_supported(),
-        enabled: autofill::is_enabled(),
-    };
+    {
+        let on = autofill::is_enabled();
+        let reg = _vaults.lock().unwrap();
+        let mine = reg.autofill.as_deref() == Some(reg.active.as_str());
+        return AutofillStatus {
+            supported: autofill::is_supported(),
+            enabled: on && mine,
+            other_vault: if on && !mine {
+                reg.autofill.as_deref().and_then(|id| reg.get(id)).map(|v| v.name.clone())
+            } else {
+                None
+            },
+        };
+    }
     #[cfg(not(target_os = "ios"))]
-    AutofillStatus { supported: false, enabled: false }
+    AutofillStatus { supported: false, enabled: false, other_vault: None }
 }
 
 #[tauri::command]
-async fn set_autofill_enabled(enabled: bool, _state: State<'_, VaultState>) -> Result<(), String> {
+async fn set_autofill_enabled(
+    enabled: bool,
+    _state: State<'_, VaultState>,
+    _vaults: State<'_, Vaults>,
+) -> Result<(), String> {
     #[cfg(target_os = "ios")]
     {
         if enabled {
             let s = _state.lock().unwrap();
-            autofill::publish(s.data.as_ref().ok_or("Vault is locked")?)
+            autofill::publish(s.data.as_ref().ok_or("Vault is locked")?)?;
+            let mut reg = _vaults.lock().unwrap();
+            reg.autofill = Some(reg.active.clone());
+            autofill::set_active_is_source(true);
+            reg.save()
         } else {
             autofill::disable();
             Ok(())
@@ -810,11 +845,9 @@ async fn apply_staged_csv_import(
 // See vault.rs. Desktop only for now: the vault file moves into a folder a
 // sync client (OneDrive, Dropbox, iCloud Drive, Syncthing) already watches,
 // and a background thread merges in whatever other devices write there.
-// The folder is remembered in sync_folder.conf in the app-data directory.
+// Each vault remembers its own folder in the vault list (registry.rs).
 
-const SYNC_FOLDER_FILE: &str = "sync_folder.conf";
-
-/// The sync folder the vault lives in, if any, and a folder the user picked
+/// The active vault's sync folder, if any, and a folder the user picked
 /// that already holds another device's vault and is waiting for its password.
 #[derive(Default)]
 #[cfg_attr(mobile, allow(dead_code))]
@@ -825,28 +858,26 @@ struct SyncState {
 
 type SyncFolder = Mutex<SyncState>;
 
+/// Records the active vault's sync folder in the vault list.
 #[cfg_attr(mobile, allow(dead_code))]
 fn save_sync_folder(app: &tauri::AppHandle, folder: Option<&Path>) -> Result<(), String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let conf = data_dir.join(SYNC_FOLDER_FILE);
-    match folder {
-        Some(folder) => {
-            std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
-            std::fs::write(conf, folder.to_string_lossy().as_bytes()).map_err(|e| e.to_string())
-        }
-        None => match std::fs::remove_file(conf) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
-            _ => Ok(()),
-        },
-    }
+    let vaults = app.state::<Vaults>();
+    let mut reg = vaults.lock().unwrap();
+    let id = reg.active.clone();
+    reg.set_sync_folder(&id, folder.map(Path::to_path_buf))?;
+    reg.save()
 }
 
+/// Refuses a sync folder another vault on this device already keeps its
+/// file in: the two would merge into each other.
 #[cfg_attr(mobile, allow(dead_code))]
-fn load_sync_folder(app: &tauri::AppHandle) -> Option<PathBuf> {
-    let conf = app.path().app_data_dir().ok()?.join(SYNC_FOLDER_FILE);
-    let folder = std::fs::read_to_string(conf).ok()?;
-    let folder = folder.trim();
-    (!folder.is_empty()).then(|| PathBuf::from(folder))
+fn check_folder_unused(app: &tauri::AppHandle, dir: &Path) -> Result<(), String> {
+    let vaults = app.state::<Vaults>();
+    let reg = vaults.lock().unwrap();
+    match reg.using_folder(dir, &reg.active) {
+        Some(other) => Err(format!("Your vault \u{201c}{}\u{201d} already syncs through that folder. Choose a different one.", other.name)),
+        None => Ok(()),
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -901,6 +932,7 @@ async fn choose_sync_folder(
         return Ok(SyncSetup::Cancelled);
     };
     let dir = picked.into_path().map_err(|e| e.to_string())?;
+    check_folder_unused(&app, &dir)?;
 
     if dir.join("vault.enc").exists() {
         sync.lock().unwrap().pending_join = Some(dir);
@@ -974,8 +1006,8 @@ async fn join_sync_folder(
 
     // A wrapped copy of the old key no longer opens anything; the next unlock re-arms it
     #[cfg(target_os = "windows")]
-    if let Some(armed) = app.try_state::<QuickUnlock>() {
-        *armed.0.lock().unwrap() = None;
+    if let (Some(armed), Some(id)) = (app.try_state::<QuickUnlock>(), active_vault_id(&app)) {
+        armed.0.lock().unwrap().remove(&id);
     }
 
     let mut s = sync.lock().unwrap();
@@ -1000,7 +1032,7 @@ async fn join_sync_folder(mut password: String) -> Result<(), String> {
 async fn open_synced_vault(app: tauri::AppHandle, sync: State<'_, SyncFolder>) -> Result<bool, String> {
     use tauri_plugin_dialog::DialogExt;
     if vault::vault_exists() {
-        return Err("This device already has a vault. Join the synced one from Settings.".into());
+        return Err("This vault already exists. Join the synced one from Settings.".into());
     }
     let Some(picked) = app
         .dialog()
@@ -1011,6 +1043,7 @@ async fn open_synced_vault(app: tauri::AppHandle, sync: State<'_, SyncFolder>) -
         return Ok(false);
     };
     let dir = picked.into_path().map_err(|e| e.to_string())?;
+    check_folder_unused(&app, &dir)?;
 
     let previous = sync.lock().unwrap().folder.clone();
     save_sync_folder(&app, Some(&dir))?;
@@ -1046,8 +1079,9 @@ async fn stop_sync(
     };
 
     let previous = sync.lock().unwrap().folder.clone();
+    let home = app.state::<Vaults>().lock().unwrap().active().home.clone();
     save_sync_folder(&app, None)?;
-    if let Err(e) = vault::default_vault_dir().and_then(|home| vault::move_vault_home(&home)) {
+    if let Err(e) = vault::move_vault_home(&home) {
         let _ = save_sync_folder(&app, previous.as_deref());
         return Err(e);
     }
@@ -1101,6 +1135,191 @@ fn watch_sync_folder(app: tauri::AppHandle) {
             _ => {}
         }
     });
+}
+
+// ── Several vaults ────────────────────────────────────────────────────────────
+//
+// See registry.rs. One vault is active at a time; the commands above all act
+// on it. Switching locks the open vault first, so two people sharing a device
+// never see each other's entries, and a key is never used on the wrong file.
+
+type Vaults = Mutex<Registry>;
+
+#[derive(serde::Serialize)]
+struct VaultSummary {
+    id: String,
+    name: String,
+    /// False until a master password has been set for it
+    exists: bool,
+    synced: bool,
+}
+
+#[derive(serde::Serialize)]
+struct VaultList {
+    active: String,
+    vaults: Vec<VaultSummary>,
+}
+
+#[tauri::command]
+fn list_vaults(vaults: State<'_, Vaults>) -> VaultList {
+    let reg = vaults.lock().unwrap();
+    VaultList {
+        active: reg.active.clone(),
+        vaults: reg
+            .vaults
+            .iter()
+            .map(|v| VaultSummary {
+                id: v.id.clone(),
+                name: v.name.clone(),
+                exists: v.exists(),
+                synced: v.sync_folder.is_some(),
+            })
+            .collect(),
+    }
+}
+
+/// Points the vault file, the sync watcher and AutoFill at the active vault.
+fn apply_active(app: &tauri::AppHandle, reg: &Registry) {
+    let active = reg.active();
+    vault::set_vault_dir(active.dir().to_path_buf());
+    if let Some(sync) = app.try_state::<SyncFolder>() {
+        let mut s = sync.lock().unwrap();
+        s.folder = active.sync_folder.clone();
+        s.pending_join = None;
+    }
+    #[cfg(target_os = "ios")]
+    autofill::set_active_is_source(reg.autofill.as_deref() == Some(reg.active.as_str()));
+}
+
+/// Locks whatever is open, then makes `id` the active vault.
+fn activate(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
+    lock_and_notify(app);
+    // A CSV picked for one vault's first run must not land in another
+    if let Some(pending) = app.try_state::<PendingCsvImport>() {
+        *pending.0.lock().unwrap() = None;
+    }
+    let vaults = app.state::<Vaults>();
+    let mut reg = vaults.lock().unwrap();
+    let previous = reg.active.clone();
+    reg.set_active(id)?;
+    if let Err(e) = reg.save() {
+        reg.active = previous;
+        return Err(e);
+    }
+    apply_active(app, &reg);
+    drop(reg);
+    let _ = app.emit("vault-switched", ());
+    let _ = app.emit("vault-list-changed", ());
+    Ok(())
+}
+
+fn is_unlocked_now(app: &tauri::AppHandle) -> bool {
+    app.state::<VaultState>().lock().unwrap().key.is_some()
+}
+
+#[tauri::command]
+async fn switch_vault(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if active_vault_id(&app).as_deref() == Some(id.as_str()) {
+        return Ok(());
+    }
+    activate(&app, &id)
+}
+
+/// Lists a new vault and switches to it. The lock screen then asks for its
+/// master password, which creates the file. Returns the new vault's id.
+#[tauri::command]
+async fn add_vault(app: tauri::AppHandle, name: String) -> Result<String, String> {
+    let id = {
+        let vaults = app.state::<Vaults>();
+        let mut reg = vaults.lock().unwrap();
+        let id = reg.add(&name)?;
+        if let Err(e) = reg.save() {
+            reg.vaults.retain(|v| v.id != id);
+            return Err(e);
+        }
+        id
+    };
+    activate(&app, &id)?;
+    Ok(id)
+}
+
+/// Renames the open vault. Only its own session can, so one person can't
+/// relabel another's vault from the lock screen.
+#[tauri::command]
+async fn rename_vault(app: tauri::AppHandle, id: String, name: String) -> Result<(), String> {
+    if active_vault_id(&app).as_deref() != Some(id.as_str()) || !is_unlocked_now(&app) {
+        return Err("Unlock that vault to rename it".into());
+    }
+    let vaults = app.state::<Vaults>();
+    let mut reg = vaults.lock().unwrap();
+    let previous = reg.get(&id).map(|v| v.name.clone()).ok_or("No such vault")?;
+    reg.rename(&id, &name)?;
+    if let Err(e) = reg.save() {
+        let _ = reg.rename(&id, &previous);
+        return Err(e);
+    }
+    drop(reg);
+    let _ = app.emit("vault-list-changed", ());
+    Ok(())
+}
+
+/// Takes a vault off this device: drops it from the list and deletes its
+/// local file. A copy in a sync folder is left for the other devices. A vault
+/// that has a file can only be removed from its own unlocked session; one
+/// that was added but never given a password can go from the lock screen.
+#[tauri::command]
+async fn remove_vault(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let (is_active, exists) = {
+        let reg = app.state::<Vaults>();
+        let reg = reg.lock().unwrap();
+        let v = reg.get(&id).ok_or("No such vault")?;
+        (reg.active == id, v.exists())
+    };
+    if exists && !(is_active && is_unlocked_now(&app)) {
+        return Err("Unlock that vault to remove it".into());
+    }
+    if is_active {
+        lock_and_notify(&app);
+    }
+
+    let vaults = app.state::<Vaults>();
+    let mut reg = vaults.lock().unwrap();
+    #[cfg(target_os = "ios")]
+    let fed_autofill = reg.autofill.as_deref() == Some(id.as_str());
+    let removed = reg.remove(&id)?;
+    let owns_home = reg.owns_home(&removed.home);
+    reg.save()?;
+    apply_active(&app, &reg);
+    drop(reg);
+
+    #[cfg(all(desktop, target_os = "windows"))]
+    if let Some(armed) = app.try_state::<QuickUnlock>() {
+        armed.0.lock().unwrap().remove(&id);
+    }
+    #[cfg(target_os = "ios")]
+    if fed_autofill {
+        autofill::disable();
+    }
+    if is_active {
+        let _ = app.emit("vault-switched", ());
+    }
+    let _ = app.emit("vault-list-changed", ());
+
+    // Only this device's copies. The original vault's folder may hold other
+    // things, so just its files go; a folder made for the vault goes whole.
+    let result = if owns_home {
+        match std::fs::remove_dir_all(&removed.home) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    } else {
+        ["vault.enc", "vault.enc.bak", "vault.enc.pre-sync"]
+            .iter()
+            .map(|f| std::fs::remove_file(removed.home.join(f)))
+            .find(|r| matches!(r, Err(e) if e.kind() != std::io::ErrorKind::NotFound))
+            .unwrap_or(Ok(()))
+    };
+    result.map_err(|e| format!("The vault was removed from the list, but its file couldn't be deleted: {e}"))
 }
 
 // ── Autostart commands (desktop only; mobile stubs return an error) ──────────
@@ -1516,32 +1735,48 @@ pub fn run() {
             join_sync_folder,
             open_synced_vault,
             stop_sync,
+            list_vaults,
+            switch_vault,
+            add_vault,
+            rename_vault,
+            remove_vault,
         ])
         .setup(|app| {
+            let data_dir = app.path().app_data_dir()?;
             // The device id lives with the app's own data, never in the
-            // sync folder the vault may move to
-            vault::set_device_dir(&app.path().app_data_dir()?);
+            // sync folder the vault may move to. All vaults share it.
+            vault::set_device_dir(&data_dir);
 
-            // On mobile, store the vault inside the app sandbox
-            // (iOS: <container>/Library/Application Support). Desktop keeps
-            // its historical location so existing vaults still load.
+            // Where the one vault of earlier versions lives, which becomes
+            // the first in the list. On mobile that is the app sandbox
+            // (iOS: <container>/Library/Application Support); on desktop the
+            // historical location, so existing vaults still load.
             #[cfg(mobile)]
-            vault::set_vault_dir(app.path().app_data_dir()?);
+            let first_home = data_dir.clone();
+            #[cfg(desktop)]
+            let first_home = vault::default_vault_dir().unwrap_or_else(|_| data_dir.join("vault"));
+
+            #[allow(unused_mut)]
+            let mut registry = Registry::load(&data_dir, first_home);
+            // AutoFill turned on before there was a list came from the only vault
+            #[cfg(target_os = "ios")]
+            if registry.autofill.is_none() && autofill::is_enabled() {
+                registry.autofill = Some(registry.active.clone());
+                let _ = registry.save();
+            }
+            // Points Vault at the active vault's folder, its sync folder
+            // included: set even when that folder is missing right now, so
+            // Vault never quietly falls back to a stale local copy
+            apply_active(app.handle(), &registry);
+            app.manage::<Vaults>(Mutex::new(registry));
 
             #[cfg(desktop)]
             {
                 setup_desktop(app)?;
                 app.manage(LockOnSystemEvents(std::sync::atomic::AtomicBool::new(false)));
                 #[cfg(target_os = "windows")]
-                app.manage(QuickUnlock(Mutex::new(None)));
+                app.manage(QuickUnlock(Mutex::new(Default::default())));
                 watch_for_system_lock(app.handle().clone());
-
-                // Set even when the folder is missing right now, so Vault
-                // never quietly falls back to a stale local copy
-                if let Some(folder) = load_sync_folder(app.handle()) {
-                    vault::set_vault_dir(folder.clone());
-                    app.state::<SyncFolder>().lock().unwrap().folder = Some(folder);
-                }
                 watch_sync_folder(app.handle().clone());
             }
 
