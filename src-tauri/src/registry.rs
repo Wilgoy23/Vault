@@ -1,12 +1,14 @@
 // The vaults this device knows about, for people who share it.
 //
 // Each vault is a separate vault.enc with its own master password, its own
-// folder on this device and, optionally, its own sync folder. Exactly one is
+// folder on this device and, optionally, its own sync folder or WebDAV
+// server (one or the other, never both). Exactly one is
 // active: that is the one the lock screen unlocks and every other command
 // works on. Only one is ever open, so switching locks the one that was.
 //
-// The list lives in vaults.json in the app's data folder. It holds names and
-// paths only, nothing secret, and never leaves this device.
+// The list lives in vaults.json in the app's data folder. It holds names,
+// paths and server addresses, and never leaves this device. The one secret,
+// a WebDAV account password, is sealed under its vault's key (webdav.rs).
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -27,6 +29,34 @@ pub struct VaultRecord {
     pub home: PathBuf,
     #[serde(default)]
     pub sync_folder: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webdav: Option<WebDavConfig>,
+}
+
+/// A WebDAV server a vault syncs through.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebDavConfig {
+    /// The folder on the server that holds vault.enc
+    pub url: String,
+    pub username: String,
+    /// The account password, sealed under the vault's key (base64 of nonce
+    /// and AES-GCM ciphertext). None from opening the vault on this device
+    /// until its first unlock, when the key to seal it with is there.
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+impl WebDavConfig {
+    /// The folder's address in a form to compare: two vaults on one server
+    /// folder would merge into each other.
+    fn folder_key(&self) -> String {
+        normalize_url(&self.url).to_ascii_lowercase()
+    }
+}
+
+/// A server folder's address without surrounding space or trailing slashes.
+pub fn normalize_url(url: &str) -> String {
+    url.trim().trim_end_matches('/').to_string()
 }
 
 impl VaultRecord {
@@ -85,6 +115,7 @@ impl Registry {
             name: "My vault".into(),
             home: legacy_home,
             sync_folder: legacy_sync,
+            webdav: None,
         };
         let mut reg = Registry {
             active: first.id.clone(),
@@ -117,6 +148,7 @@ impl Registry {
                 name,
                 home,
                 sync_folder: None,
+                webdav: None,
             });
         }
     }
@@ -173,7 +205,7 @@ impl Registry {
         let name = self.check_name(name, None)?;
         let id = uuid::Uuid::new_v4().to_string();
         let home = self.data_dir.join(VAULTS_SUBDIR).join(&id);
-        self.vaults.push(VaultRecord { id: id.clone(), name, home, sync_folder: None });
+        self.vaults.push(VaultRecord { id: id.clone(), name, home, sync_folder: None, webdav: None });
         Ok(id)
     }
 
@@ -192,6 +224,20 @@ impl Registry {
     pub fn set_sync_folder(&mut self, id: &str, folder: Option<PathBuf>) -> Result<(), String> {
         self.get_mut(id)?.sync_folder = folder;
         Ok(())
+    }
+
+    pub fn set_webdav(&mut self, id: &str, webdav: Option<WebDavConfig>) -> Result<(), String> {
+        self.get_mut(id)?.webdav = webdav;
+        Ok(())
+    }
+
+    /// The vault other than `except` that already syncs through the server
+    /// folder at `url`.
+    pub fn using_server(&self, url: &str, except: &str) -> Option<&VaultRecord> {
+        let want = normalize_url(url).to_ascii_lowercase();
+        self.vaults
+            .iter()
+            .find(|v| v.id != except && v.webdav.as_ref().is_some_and(|w| w.folder_key() == want))
     }
 
     /// The vault other than `except` that already keeps its file in `dir`.
@@ -311,6 +357,30 @@ mod tests {
         assert_eq!(reg.using_folder(&shared, &second).map(|v| v.id.as_str()), Some(first.as_str()));
         assert!(reg.using_folder(&shared, &first).is_none());
         assert!(reg.using_folder(&data.join("elsewhere"), &second).is_none());
+    }
+
+    #[test]
+    fn a_server_folder_belongs_to_one_vault_and_is_remembered() {
+        let data = temp_dir("webdav");
+        let mut reg = Registry::load(&data, data.join("legacy"));
+        let first = reg.active.clone();
+        let second = reg.add("Second").unwrap();
+        let config = WebDavConfig {
+            url: "https://dav.example.com/Vault/".into(),
+            username: "me".into(),
+            password: Some("sealed".into()),
+        };
+        reg.set_webdav(&first, Some(config.clone())).unwrap();
+        reg.save().unwrap();
+
+        // Same folder however it's written
+        assert_eq!(reg.using_server(" HTTPS://dav.example.com/Vault ", &second).map(|v| v.id.as_str()), Some(first.as_str()));
+        assert!(reg.using_server("https://dav.example.com/Vault", &first).is_none());
+        assert!(reg.using_server("https://dav.example.com/Other", &second).is_none());
+
+        let again = Registry::load(&data, data.join("legacy"));
+        assert_eq!(again.get(&first).unwrap().webdav, Some(config));
+        assert_eq!(again.get(&second).unwrap().webdav, None);
     }
 
     #[test]
