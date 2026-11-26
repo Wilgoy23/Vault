@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Palette, Shield, Monitor, Database, X, Keyboard, FolderSync, Vault } from "lucide-react";
 import { THEMES, Theme } from "../themes";
-import { exportVault, importVault, importCsv, enableAutostart, disableAutostart, changeMasterPassword, autofillStatus, setAutofillEnabled, syncStatus, chooseSyncFolder, joinSyncFolder, stopSync, SyncStatus, switchVault, addVault, renameVault, removeVault } from "../api";
+import { listen } from "@tauri-apps/api/event";
+import { exportVault, importVault, importCsv, enableAutostart, disableAutostart, changeMasterPassword, autofillStatus, setAutofillEnabled, syncStatus, chooseSyncFolder, joinSyncFolder, stopSync, SyncStatus, switchVault, addVault, renameVault, removeVault, webdavStatus, WebDavStatus, connectWebdav, joinWebdav, cancelWebdavJoin, stopWebdav, syncWebdavNow } from "../api";
 import MasterPasswordMeter from "./MasterPasswordMeter";
 import ConfirmDialog from "./ConfirmDialog";
+import WebDavForm, { boxStyle } from "./WebDavForm";
 import { useIsMobile } from "../utils/platform";
 import { useVaultList } from "../utils/useVaultList";
 
@@ -278,18 +280,39 @@ export default function SettingsModal({
   );
 }
 
-/** Desktop only: renders nothing where the backend reports no support. */
+/** "just now", "5 min ago", or the time of day */
+function syncedAgo(secs: number): string {
+  const ago = Date.now() / 1000 - secs;
+  if (ago < 60) return "just now";
+  if (ago < 3600) return `${Math.floor(ago / 60)} min ago`;
+  return new Date(secs * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/** A vault syncs one way at a time: a sync folder (desktop only) or a WebDAV
+ *  server (everywhere). Each shows only while the other isn't in use. */
 function SyncSection() {
   const [status, setStatus] = useState<SyncStatus | null>(null);
+  const [dav, setDav] = useState<WebDavStatus | null>(null);
+  // Which password form is open: the folder's vault, or the server form
   const [joining, setJoining] = useState(false);
+  const [davForm, setDavForm] = useState(false);
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // Re-renders "x min ago"
+  const [, setTick] = useState(0);
 
-  const refresh = () => syncStatus().then(setStatus).catch(() => {});
-  useEffect(() => { refresh(); }, []);
+  const refreshFolder = () => syncStatus().then(setStatus).catch(() => {});
+  const refreshDav = () => webdavStatus().then(setDav).catch(() => {});
+  useEffect(() => {
+    refreshFolder();
+    refreshDav();
+    const unlisten = listen("webdav-status", () => { refreshDav(); });
+    const timer = setInterval(() => setTick((n) => n + 1), 30_000);
+    return () => { unlisten.then((f) => f()); clearInterval(timer); };
+  }, []);
 
-  if (!status?.supported) return null;
+  if (!status || !dav) return null;
 
   const run = async (action: () => Promise<void>) => {
     setError("");
@@ -302,66 +325,144 @@ function SyncSection() {
   const handleChoose = () => run(async () => {
     const result = await chooseSyncFolder();
     if (result === "needs_password") setJoining(true);
-    else if (result === "moved") await refresh();
+    else if (result === "moved") await refreshFolder();
   });
 
   // The entry lists reload on the "vault-changed" event the backend sends
   const handleJoin = (e: React.FormEvent) => {
     e.preventDefault();
     run(async () => {
-      await joinSyncFolder(password);
+      if (dav.awaiting_join || dav.password_changed) await joinWebdav(password);
+      else await joinSyncFolder(password);
       setPassword("");
       setJoining(false);
-      await refresh();
+      await Promise.all([refreshFolder(), refreshDav()]);
     });
+  };
+
+  const handleCancelJoin = () => {
+    if (dav.awaiting_join) cancelWebdavJoin().then(refreshDav).catch(() => {});
+    setJoining(false);
+    setPassword("");
+    setError("");
   };
 
   const handleStop = () => run(async () => {
     await stopSync();
-    await refresh();
+    await refreshFolder();
+  });
+
+  const handleConnect = async (url: string, username: string, accountPassword: string) => {
+    const result = await connectWebdav(url, username, accountPassword);
+    setDavForm(false);
+    await refreshDav();
+    if (result === "needs_password") setPassword("");
+  };
+
+  const handleStopDav = () => run(async () => {
+    await stopWebdav();
+    await refreshDav();
+  });
+
+  const handleSyncNow = () => run(async () => {
+    await syncWebdavNow();
+    await refreshDav();
   });
 
   const hint: React.CSSProperties = { fontSize: "11px", color: "var(--muted-dim)", lineHeight: 1.5, margin: "-4px 0 0" };
+  const small: React.CSSProperties = { fontSize: "13px", padding: "6px 14px" };
+  const mono: React.CSSProperties = { fontSize: "12px", fontFamily: "var(--mono)", color: "var(--muted)", margin: "-4px 0 10px", wordBreak: "break-all" };
+
+  const usingDav = dav.configured || dav.awaiting_join;
+  const showFolder = status.supported && !usingDav;
+  const showDav = !status.folder;
+  // The folder's join form, or the server's: one master password form
+  const davJoin = dav.awaiting_join || dav.password_changed;
+  const joinOpen = joining || davJoin;
 
   return (
     <>
       <Divider />
       <Section icon={<FolderSync size={13} strokeWidth={2} />} label="Sync">
-        <Row label="Sync folder">
-          {status.folder ? (
-            <button className="btn-ghost" style={{ fontSize: "13px", padding: "6px 14px" }} onClick={handleStop} disabled={busy}>
-              Stop syncing
-            </button>
-          ) : (
-            <button className="btn-ghost" style={{ fontSize: "13px", padding: "6px 14px" }} onClick={handleChoose} disabled={busy || joining}>
-              Choose folder…
-            </button>
-          )}
-        </Row>
-
-        {status.folder && (
-          <p style={{ fontSize: "12px", fontFamily: "var(--mono)", color: "var(--muted)", margin: "-4px 0 10px", wordBreak: "break-all" }}>
-            {status.folder}
-          </p>
+        {showFolder && (
+          <>
+            <Row label="Sync folder">
+              {status.folder ? (
+                <button className="btn-ghost" style={small} onClick={handleStop} disabled={busy}>
+                  Stop syncing
+                </button>
+              ) : (
+                <button className="btn-ghost" style={small} onClick={handleChoose} disabled={busy || joinOpen || davForm}>
+                  Choose folder…
+                </button>
+              )}
+            </Row>
+            {status.folder && <p style={mono}>{status.folder}</p>}
+          </>
         )}
 
-        {joining && (
-          <form
-            onSubmit={handleJoin}
-            style={{
-              display: "flex", flexDirection: "column", gap: "10px",
-              padding: "14px", marginBottom: "12px",
-              background: "rgba(255,255,255,0.03)",
-              border: "1px solid var(--border-dim)", borderRadius: "var(--r-md)",
-            }}
-          >
+        {showDav && (
+          <>
+            <Row label="WebDAV server">
+              {dav.configured ? (
+                <button className="btn-ghost" style={small} onClick={handleStopDav} disabled={busy}>
+                  Stop syncing
+                </button>
+              ) : (
+                <button className="btn-ghost" style={small} onClick={() => { setDavForm(true); setError(""); }} disabled={busy || joinOpen || davForm}>
+                  Set up…
+                </button>
+              )}
+            </Row>
+            {dav.configured && (
+              <>
+                <p style={mono}>{dav.username} · {dav.url}</p>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", margin: "-2px 0 12px", fontSize: "12px" }}>
+                  <span style={{ flex: 1, color: dav.error ? "var(--danger)" : "var(--muted)", lineHeight: 1.45 }}>
+                    {dav.error ?? (dav.last_sync ? `Synced ${syncedAgo(dav.last_sync)}` : "Waiting to sync…")}
+                  </span>
+                  {!dav.password_changed && (
+                    <>
+                      {dav.error && (
+                        <button className="btn-ghost" style={{ fontSize: "12px", padding: "4px 10px" }} onClick={() => setDavForm(true)} disabled={busy || davForm}>
+                          Reconnect…
+                        </button>
+                      )}
+                      <button className="btn-ghost" style={{ fontSize: "12px", padding: "4px 10px" }} onClick={handleSyncNow} disabled={busy}>
+                        {busy ? "Syncing…" : "Sync now"}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
+          </>
+        )}
+
+        {davForm && (
+          <WebDavForm
+            intro={dav.configured
+              ? "Enter the account password again. Your vault stays as it is."
+              : <>The folder on your server to keep the vault in, such as a Nextcloud or Koofr folder. Use an <strong>app password</strong> if your provider offers them.</>}
+            submitLabel={dav.configured ? "Reconnect" : "Connect"}
+            busyLabel="Connecting…"
+            initialUrl={dav.url ?? undefined}
+            initialUsername={dav.username ?? undefined}
+            onSubmit={handleConnect}
+            onCancel={() => setDavForm(false)}
+          />
+        )}
+
+        {joinOpen && (
+          <form onSubmit={handleJoin} style={boxStyle}>
             <p style={{ fontSize: "12.5px", lineHeight: 1.5, margin: 0 }}>
-              This folder already has a vault. Enter its master password to merge this
-              device's entries into it. After that, you unlock with that password here too.
+              {dav.password_changed
+                ? "This vault's master password was changed on another device. Enter the new one to keep syncing; after that, you unlock with it here too."
+                : `This ${davJoin ? "server folder" : "folder"} already has a vault. Enter its master password to merge this device's entries into it. After that, you unlock with that password here too.`}
             </p>
             <input
               type="password"
-              placeholder="Master password of the synced vault"
+              placeholder={dav.password_changed ? "New master password" : "Master password of the synced vault"}
               value={password}
               onChange={(e) => { setPassword(e.target.value); setError(""); }}
               autoFocus
@@ -370,9 +471,11 @@ function SyncSection() {
               <button type="submit" className="btn-primary" disabled={busy || !password} style={{ flex: 1, fontSize: "13px", padding: "8px" }}>
                 {busy ? "Merging…" : "Merge and sync"}
               </button>
-              <button type="button" className="btn-ghost" onClick={() => { setJoining(false); setPassword(""); setError(""); }} style={{ fontSize: "13px", padding: "8px 14px" }}>
-                Cancel
-              </button>
+              {!dav.password_changed && (
+                <button type="button" className="btn-ghost" onClick={handleCancelJoin} style={{ fontSize: "13px", padding: "8px 14px" }}>
+                  Cancel
+                </button>
+              )}
             </div>
           </form>
         )}
@@ -382,7 +485,11 @@ function SyncSection() {
         <p style={hint}>
           {status.folder
             ? "Stopping keeps a copy of the vault on this device. The synced copy stays in the folder for your other devices."
-            : "Keep your vault in a folder that OneDrive, Dropbox, iCloud Drive or Syncthing syncs, then choose the same folder on your other computers. Vault merges changes from each device. Only the encrypted file leaves this one."}
+            : dav.configured
+            ? "Your vault stays on this device and works offline; the server keeps an encrypted copy that each device merges with its own. Stopping leaves that copy for your other devices."
+            : status.supported
+            ? "Keep your vault in a folder that OneDrive, Dropbox, iCloud Drive or Syncthing syncs, or on a WebDAV server such as Nextcloud or Koofr, then set up the same on your other devices. Vault merges changes from each one. Only the encrypted file leaves this device."
+            : "Keep an encrypted copy of your vault on a WebDAV server such as Nextcloud or Koofr, then set up the same on your other devices. Vault merges changes from each one. Only the encrypted file leaves this device."}
         </p>
       </Section>
     </>
@@ -528,7 +635,7 @@ function VaultsSection({ beforeChange }: { beforeChange: () => Promise<void> }) 
         <ConfirmDialog
           title={`Remove “${active.name}”?`}
           message={active.synced
-            ? "This deletes the vault from this device. The copy in your sync folder stays there for your other devices. Export a backup first if you might want it here again."
+            ? "This deletes the vault from this device. The synced copy stays in your sync folder or on your server for your other devices. Export a backup first if you might want it here again."
             : "This permanently deletes the vault and every entry in it from this device. Export a backup first if you might need it again."}
           confirmLabel="Remove vault"
           danger

@@ -19,7 +19,7 @@ use folder_crdt::codec::{read_params, Envelope};
 use folder_crdt::format::FormatError;
 use folder_crdt::vault::file::{self as vault_file, FileCodec};
 use folder_crdt::vault::Fields;
-use folder_crdt::{Cipher, FolderStore, Hlc, HlcClock, KeyMismatch, Merge, Store, StoreError};
+use folder_crdt::{Cipher, Codec, FolderStore, Hlc, HlcClock, KeyMismatch, Merge, Store, StoreError};
 
 /// The active vault's folder, set at startup and whenever the user switches
 /// vaults (registry.rs keeps the list). Falls back on desktop to the
@@ -320,6 +320,8 @@ pub fn save_vault(key: &[u8; 32], data: &mut VaultData) -> Result<(), String> {
     // Every entry and folder change comes through here
     #[cfg(target_os = "ios")]
     crate::autofill::refresh(data);
+    // Uploads it soon, if this vault syncs through a server
+    crate::webdav::kick();
     Ok(())
 }
 
@@ -435,6 +437,79 @@ pub fn move_vault_home(home: &Path) -> Result<(), String> {
     write_vault_file(&dest, &raw)?;
     set_vault_dir(home.to_path_buf());
     Ok(())
+}
+
+// ── Sync through a server ─────────────────────────────────────────────────────
+//
+// See webdav.rs. The vault file stays here, read and written as above; the
+// server holds a copy of the same file, so it is read and written with the
+// same key, salt and cost.
+
+/// How the vault's file is read and written on a server.
+pub type RemoteCodec = FileCodec<VaultCipher>;
+
+/// The codec for the server's copy of this vault, under `key`.
+pub fn remote_codec(key: &[u8; 32]) -> Result<RemoteCodec, String> {
+    let (kdf, salt) = file_params(&read_vault_file(&vault_path()?)?)?;
+    Ok(FileCodec::new(VaultCipher::new(key, kdf, salt)))
+}
+
+/// Whether `codec` writes under `key`, or is left from before a password change.
+pub fn codec_has_key(codec: &RemoteCodec, key: &[u8; 32]) -> bool {
+    *codec.cipher().key == *key
+}
+
+/// Whether `bytes`, a vault file from a server, opens with `key`. Errors if
+/// it isn't a vault file this build can read at all.
+pub fn opens_with(bytes: &[u8], key: &[u8; 32]) -> Result<bool, String> {
+    vault_file::check(bytes).map_err(describe)?;
+    let (kdf, salt) = file_params(bytes)?;
+    match FileCodec::new(VaultCipher::new(key, kdf, salt)).decode(bytes) {
+        Ok(_) => Ok(true),
+        Err(StoreError::KeyMismatch) => Ok(false),
+        Err(e) => Err(describe(e)),
+    }
+}
+
+/// For a device with no vault yet: makes `bytes`, the vault another device
+/// keeps on a server, this vault's file. The lock screen then asks for that
+/// vault's master password.
+pub fn adopt_vault_file(bytes: &[u8]) -> Result<(), String> {
+    if vault_exists() {
+        return Err("This vault already exists".into());
+    }
+    vault_file::check(bytes).map_err(describe)?;
+    let dir = vault_dir()?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    write_vault_file(&dir.join("vault.enc"), bytes)
+}
+
+/// Joins the vault another device keeps on a server, whose file is `bytes`:
+/// opens it with `password` (its own master password, which may differ from
+/// this vault's), merges it into `data`, and rewrites this device's file
+/// under that vault's key. Returns that key, which becomes the session key.
+/// The file as it was is kept as `vault.enc.pre-sync`.
+pub fn join_vault_bytes(bytes: &[u8], password: &str, data: &mut VaultData) -> Result<Zeroizing<[u8; 32]>, String> {
+    vault_file::check(bytes).map_err(describe)?;
+    let codec = FileCodec::new(VaultCipher::for_file(password, bytes)?);
+    let theirs = codec.decode(bytes).map_err(|e| match e {
+        StoreError::KeyMismatch => "That password doesn't open the vault on the server".to_string(),
+        e => describe(e),
+    })?;
+    data.merge(theirs);
+    observe(data);
+
+    let path = vault_path()?;
+    if path.exists() {
+        fs::copy(&path, path.with_file_name("vault.enc.pre-sync")).map_err(|e| e.to_string())?;
+    }
+    write_vault_file(&path, &codec.encode(data).map_err(describe)?)?;
+    let key = codec.cipher().key.clone();
+    // Read back, so the next save knows the file as it now is
+    let mut store = FolderStore::new(vault_dir()?, "vault", "enc", codec);
+    store.load().map_err(describe)?;
+    *STORE.lock().unwrap() = Some(store);
+    Ok(key)
 }
 
 /// Adds a new entry and saves the vault.
@@ -1201,6 +1276,65 @@ mod tests {
         let (_, reread) = unlock_vault("password").unwrap();
         assert_eq!(reread.entry_views().len(), 3);
         let _ = fs::remove_file(&backup);
+    }
+
+    /// The vault file another device keeps on a server: its own vault, under
+    /// its own password, with one entry.
+    fn server_vault(password: &str, entry: &str) -> (Zeroizing<[u8; 32]>, Vec<u8>) {
+        create_vault(password).unwrap();
+        let (key, mut data) = unlock_vault(password).unwrap();
+        sample_entry(&key, &mut data, entry, "pw");
+        let bytes = fs::read(vault_path().unwrap()).unwrap();
+        close_store();
+        fs::remove_file(vault_path().unwrap()).unwrap();
+        (key, bytes)
+    }
+
+    #[test]
+    fn joining_the_vault_on_a_server_merges_into_it_and_takes_its_key() {
+        let _g = vault_test();
+        let (their_key, bytes) = server_vault("server-password", "From the server");
+        let pre_sync = vault_path().unwrap().with_file_name("vault.enc.pre-sync");
+        let _ = fs::remove_file(&pre_sync);
+
+        create_vault("this-device").unwrap();
+        let (my_key, mut mine) = unlock_vault("this-device").unwrap();
+        sample_entry(&my_key, &mut mine, "From here", "pw");
+
+        assert!(!opens_with(&bytes, &my_key).unwrap());
+        assert!(opens_with(&bytes, &their_key).unwrap());
+        assert!(opens_with(b"not a vault", &my_key).is_err());
+        assert!(join_vault_bytes(&bytes, "wrong", &mut mine.clone()).is_err());
+
+        let key = join_vault_bytes(&bytes, "server-password", &mut mine).unwrap();
+        assert_eq!(*key, *their_key);
+        let mut names: Vec<String> = mine.entry_views().iter().map(|e| e.name.clone()).collect();
+        names.sort();
+        assert_eq!(names, ["From here", "From the server"]);
+
+        // This device's file is now that vault, and the old one is kept
+        assert!(pre_sync.exists());
+        assert!(unlock_vault("this-device").is_err());
+        let (_, reread) = unlock_vault("server-password").unwrap();
+        assert_eq!(reread.entry_views().len(), 2);
+        // Saves go on under the new key
+        sample_entry(&key, &mut mine, "Afterwards", "pw");
+        assert_eq!(unlock_vault("server-password").unwrap().1.entry_views().len(), 3);
+        let _ = fs::remove_file(&pre_sync);
+    }
+
+    #[test]
+    fn a_new_device_adopts_the_vault_on_a_server() {
+        let _g = vault_test();
+        let (_, bytes) = server_vault("server-password", "From the server");
+        assert!(adopt_vault_file(b"not a vault").is_err());
+        assert!(!vault_exists());
+
+        adopt_vault_file(&bytes).unwrap();
+        let (key, data) = unlock_vault("server-password").unwrap();
+        assert_eq!(data.entry_views()[0].name, "From the server");
+        assert!(codec_has_key(&remote_codec(&key).unwrap(), &key));
+        assert!(adopt_vault_file(&bytes).is_err(), "never over a vault that's there");
     }
 
     #[test]

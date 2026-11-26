@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { ShieldCheck, Lock, Eye, EyeOff, Check, Fingerprint, FolderSync, Upload, FileSpreadsheet, X, ChevronDown } from "lucide-react";
-import { createVault, unlock, vaultExists, quickUnlockArmed, quickUnlock, syncStatus, openSyncedVault, importVault, stageCsvImport, clearStagedCsvImport, applyStagedCsvImport, SyncStatus, removeVault } from "../api";
+import { ShieldCheck, Lock, Eye, EyeOff, Check, Fingerprint, FolderSync, Upload, FileSpreadsheet, X, ChevronDown, Cloud } from "lucide-react";
+import { createVault, unlock, vaultExists, quickUnlockArmed, quickUnlock, syncStatus, openSyncedVault, importVault, stageCsvImport, clearStagedCsvImport, applyStagedCsvImport, SyncStatus, removeVault, openWebdavVault } from "../api";
 import MasterPasswordMeter from "./MasterPasswordMeter";
 import VaultPicker from "./VaultPicker";
+import WebDavForm from "./WebDavForm";
 import { useVaultList } from "../utils/useVaultList";
 
 interface Props {
@@ -25,6 +26,9 @@ export default function LockScreen({ notice, onUnlocked }: Props) {
   const [stagedCsv, setStagedCsv] = useState<number | null>(null);
   // First-run extras (import, sync folder) stay tucked away until asked for
   const [showMore, setShowMore] = useState(false);
+  const [serverForm, setServerForm] = useState(false);
+  // Downloaded from a server: the unlock form needs that vault's password
+  const [fromServer, setFromServer] = useState(false);
   // Every vault on this device. App remounts this screen when the active one
   // changes, which resets everything else here.
   const vaults = useVaultList();
@@ -64,6 +68,17 @@ export default function LockScreen({ notice, onUnlocked }: Props) {
     } catch (err: any) {
       setError(err?.toString() ?? "Could not open that folder.");
     }
+  };
+
+  // Another device: download the vault it keeps on a WebDAV server
+  const handleOpenFromServer = async (url: string, username: string, accountPassword: string) => {
+    await openWebdavVault(url, username, accountPassword);
+    if (stagedCsv !== null) { clearStagedCsvImport().catch(() => {}); setStagedCsv(null); }
+    setServerForm(false);
+    setFromServer(true);
+    setIsNew(false);
+    setPassword("");
+    setConfirm("");
   };
 
   // First run: restore an existing .enc backup instead of creating a new
@@ -174,6 +189,8 @@ export default function LockScreen({ notice, onUnlocked }: Props) {
             <p style={{ color: "var(--muted)", fontSize: "13px", lineHeight: 1.5 }}>
               {isNew
                 ? "Choose a strong master password. It cannot be recovered if lost."
+                : fromServer
+                ? "Downloaded from your server. Enter that vault's master password; it keeps syncing from then on."
                 : "Enter your master password to continue."}
             </p>
           </div>
@@ -366,7 +383,31 @@ export default function LockScreen({ notice, onUnlocked }: Props) {
                     Open a vault from a sync folder…
                   </button>
                 )}
+
+                {!serverForm && (
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    onClick={() => { setServerForm(true); setError(""); }}
+                    style={optionStyle}
+                  >
+                    <Cloud size={15} strokeWidth={2} />
+                    Open a vault from a WebDAV server…
+                  </button>
+                )}
               </>
+            )}
+
+            {showMore && serverForm && (
+              <div style={{ marginTop: "12px" }}>
+                <WebDavForm
+                  intro="The folder on your server where another device keeps this vault. You'll then unlock it with its master password."
+                  submitLabel="Download vault"
+                  busyLabel="Downloading…"
+                  onSubmit={handleOpenFromServer}
+                  onCancel={() => setServerForm(false)}
+                />
+              </div>
             )}
           </>
         )}

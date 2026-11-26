@@ -217,6 +217,50 @@ export const openSyncedVault = () =>
 export const stopSync = () =>
   invoke<void>("stop_sync");
 
+/** WebDAV server sync (every platform). The vault file stays on the device;
+ *  a copy on the server is merged with each device's in the background.
+ *  The backend emits "webdav-status" whenever this changes, and
+ *  "vault-changed" when another device's edits arrive. */
+export interface WebDavStatus {
+  configured: boolean;
+  /** The server folder that holds vault.enc */
+  url: string | null;
+  username: string | null;
+  /** Waiting for the master password of the vault already on the server */
+  awaiting_join: boolean;
+  /** Unix seconds of the last sync that reached the server */
+  last_sync: number | null;
+  error: string | null;
+  /** The vault's master password was changed on another device */
+  password_changed: boolean;
+}
+
+export const webdavStatus = () =>
+  invoke<WebDavStatus>("webdav_status");
+
+/** "needs_password": the server folder already holds another vault; pass
+ *  that vault's master password to joinWebdav to merge into it. */
+export const connectWebdav = (url: string, username: string, password: string) =>
+  invoke<"connected" | "needs_password">("connect_webdav", { url, username, password });
+
+/** Also how a device takes up a master password changed on another one. */
+export const joinWebdav = (password: string) =>
+  invoke<void>("join_webdav", { password });
+
+export const cancelWebdavJoin = () =>
+  invoke<void>("cancel_webdav_join");
+
+export const stopWebdav = () =>
+  invoke<void>("stop_webdav");
+
+export const syncWebdavNow = () =>
+  invoke<void>("sync_webdav_now");
+
+/** For a device with no copy of the vault yet: downloads it from the server.
+ *  The lock screen then asks for its master password. */
+export const openWebdavVault = (url: string, username: string, password: string) =>
+  invoke<void>("open_webdav_vault", { url, username, password });
+
 export const enableAutostart = () =>
   invoke<void>("enable_autostart");
 

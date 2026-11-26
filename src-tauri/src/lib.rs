@@ -13,6 +13,7 @@ mod csv_import;
 mod hello;
 mod registry;
 mod vault;
+mod webdav;
 
 use registry::Registry;
 use std::path::{Path, PathBuf};
@@ -191,7 +192,7 @@ async fn create_vault(
 }
 
 #[tauri::command]
-async fn unlock(mut password: String, state: State<'_, VaultState>) -> Result<(), String> {
+async fn unlock(app: tauri::AppHandle, mut password: String, state: State<'_, VaultState>) -> Result<(), String> {
     let result = vault::unlock_vault(&password);
     password.zeroize();
     let (key, mut data) = result?;
@@ -201,18 +202,24 @@ async fn unlock(mut password: String, state: State<'_, VaultState>) -> Result<()
     #[cfg(target_os = "ios")]
     autofill::refresh(&data);
     let mut s = state.lock().unwrap();
-    s.key = Some(key);
+    s.key = Some(key.clone());
     s.data = Some(data);
+    drop(s);
+    webdav::on_unlock(&app, &key);
     Ok(())
 }
 
 #[tauri::command]
 async fn change_master_password(
+    app: tauri::AppHandle,
     mut current_password: String,
     mut new_password: String,
     state: State<'_, VaultState>,
 ) -> Result<(), String> {
+    // The server's copy is under the old key; take in what's there while it still opens
+    webdav::sync_now(&app, false);
     let mut guard = state.lock().unwrap();
+    let old_key = guard.key.clone();
     let s = &mut *guard;
     let result = match (&s.key, &mut s.data) {
         (Some(key), Some(data)) => {
@@ -224,8 +231,13 @@ async fn change_master_password(
     };
     current_password.zeroize();
     new_password.zeroize();
+    let new_key = result?;
     // Replacing the old key zeroizes it on drop
-    s.key = Some(result?);
+    s.key = Some(new_key.clone());
+    drop(guard);
+    if let Some(old_key) = old_key {
+        webdav::reseal(&app, &old_key, &new_key);
+    }
     Ok(())
 }
 
@@ -240,6 +252,8 @@ fn lock_and_notify(app: &tauri::AppHandle) {
         // The store's cipher holds a copy of the key too
         vault::close_store();
     }
+    // And so does the server connection's
+    webdav::on_lock(app);
     let _ = app.emit("vault-locked", ());
 }
 
@@ -356,9 +370,10 @@ async fn quick_unlock(_app: tauri::AppHandle) -> Result<(), String> {
 
         let state = _app.try_state::<VaultState>().ok_or("Vault is unavailable")?;
         let mut s = state.lock().unwrap();
-        s.key = Some(key);
+        s.key = Some(key.clone());
         s.data = Some(data);
         drop(s);
+        webdav::on_unlock(&_app, &key);
 
         let _ = _app.emit("vault-unlocked", ());
         Ok(())
@@ -869,11 +884,15 @@ fn save_sync_folder(app: &tauri::AppHandle, folder: Option<&Path>) -> Result<(),
 }
 
 /// Refuses a sync folder another vault on this device already keeps its
-/// file in: the two would merge into each other.
+/// file in: the two would merge into each other. Also refuses one for a
+/// vault that syncs through a WebDAV server: one way at a time.
 #[cfg_attr(mobile, allow(dead_code))]
 fn check_folder_unused(app: &tauri::AppHandle, dir: &Path) -> Result<(), String> {
     let vaults = app.state::<Vaults>();
     let reg = vaults.lock().unwrap();
+    if reg.active().webdav.is_some() {
+        return Err("This vault syncs through a WebDAV server. Stop that first: a vault syncs one way at a time.".into());
+    }
     match reg.using_folder(dir, &reg.active) {
         Some(other) => Err(format!("Your vault \u{201c}{}\u{201d} already syncs through that folder. Choose a different one.", other.name)),
         None => Ok(()),
@@ -1137,6 +1156,74 @@ fn watch_sync_folder(app: tauri::AppHandle) {
     });
 }
 
+// ── WebDAV server ─────────────────────────────────────────────────────────────
+//
+// See webdav.rs. Works on every platform, phones included: the vault file
+// stays here and a copy on the server is merged with each device's.
+
+#[tauri::command]
+fn webdav_status(app: tauri::AppHandle) -> webdav::StatusView {
+    webdav::status(&app)
+}
+
+/// Starts syncing the open vault through a WebDAV folder. If the folder
+/// already holds another vault, the UI asks for that vault's master password
+/// and calls `join_webdav`.
+#[tauri::command]
+async fn connect_webdav(
+    app: tauri::AppHandle,
+    url: String,
+    username: String,
+    password: String,
+) -> Result<webdav::Connect, String> {
+    webdav::connect(&app, &url, &username, Zeroizing::new(password))
+}
+
+/// Merges this vault into the one on the server, using that vault's master
+/// password, which from then on unlocks it here too. Also how a device takes
+/// up a password changed on another device.
+#[tauri::command]
+async fn join_webdav(app: tauri::AppHandle, password: String) -> Result<(), String> {
+    let password = Zeroizing::new(password);
+    webdav::join(&app, &password)?;
+    // A wrapped copy of the old key no longer opens anything; the next unlock re-arms it
+    #[cfg(all(desktop, target_os = "windows"))]
+    if let (Some(armed), Some(id)) = (app.try_state::<QuickUnlock>(), active_vault_id(&app)) {
+        armed.0.lock().unwrap().remove(&id);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_webdav_join(app: tauri::AppHandle) {
+    webdav::cancel_join(&app);
+}
+
+#[tauri::command]
+async fn stop_webdav(app: tauri::AppHandle) -> Result<(), String> {
+    webdav::stop(&app)
+}
+
+/// For a device with no copy of the active vault yet: downloads the one on
+/// the server. The lock screen then asks for its master password.
+#[tauri::command]
+async fn open_webdav_vault(
+    app: tauri::AppHandle,
+    url: String,
+    username: String,
+    password: String,
+) -> Result<(), String> {
+    webdav::open_from_server(&app, &url, &username, Zeroizing::new(password))?;
+    let _ = app.emit("vault-list-changed", ());
+    Ok(())
+}
+
+/// Syncs now, for a "Sync now" button.
+#[tauri::command]
+async fn sync_webdav_now(app: tauri::AppHandle) {
+    webdav::sync_now(&app, true);
+}
+
 // ── Several vaults ────────────────────────────────────────────────────────────
 //
 // See registry.rs. One vault is active at a time; the commands above all act
@@ -1172,7 +1259,7 @@ fn list_vaults(vaults: State<'_, Vaults>) -> VaultList {
                 id: v.id.clone(),
                 name: v.name.clone(),
                 exists: v.exists(),
-                synced: v.sync_folder.is_some(),
+                synced: v.sync_folder.is_some() || v.webdav.is_some(),
             })
             .collect(),
     }
@@ -1187,6 +1274,7 @@ fn apply_active(app: &tauri::AppHandle, reg: &Registry) {
         s.folder = active.sync_folder.clone();
         s.pending_join = None;
     }
+    webdav::reset(app);
     #[cfg(target_os = "ios")]
     autofill::set_active_is_source(reg.autofill.as_deref() == Some(reg.active.as_str()));
 }
@@ -1690,6 +1778,7 @@ pub fn run() {
         })))
         .manage(ClipboardClearGen(Mutex::new((0, None))))
         .manage(SyncFolder::default())
+        .manage(webdav::WebDavSync::default())
         .manage(PendingCsvImport::default())
         .invoke_handler(tauri::generate_handler![
             get_platform,
@@ -1735,6 +1824,13 @@ pub fn run() {
             join_sync_folder,
             open_synced_vault,
             stop_sync,
+            webdav_status,
+            connect_webdav,
+            join_webdav,
+            cancel_webdav_join,
+            stop_webdav,
+            open_webdav_vault,
+            sync_webdav_now,
             list_vaults,
             switch_vault,
             add_vault,
@@ -1769,6 +1865,7 @@ pub fn run() {
             // Vault never quietly falls back to a stale local copy
             apply_active(app.handle(), &registry);
             app.manage::<Vaults>(Mutex::new(registry));
+            webdav::spawn(app.handle().clone());
 
             #[cfg(desktop)]
             {

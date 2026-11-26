@@ -22,7 +22,7 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-folder-crdt = { git = "https://github.com/Wilgoy23/folder-crdt", branch = "main" }
+folder-crdt = { git = "https://github.com/Wilgoy23/folder-crdt", rev = "6af7fcdc36a94f66837cae289d075221f1c8a4af", features = ["webdav"] }
 
 # Crypto
 aes-gcm = "0.10"
