@@ -100,9 +100,9 @@ export default function PasswordInput({ value, onChange }: Props) {
 
   const strength = (() => {
     const score = [opts.upper, opts.numbers, opts.symbols].filter(Boolean).length;
-    if (opts.length >= 20 && score === 3) return { label: "Strong", color: "#4ade80" };
-    if (opts.length >= 14 && score >= 2)  return { label: "Good",   color: "#facc15" };
-    return { label: "Weak", color: "#f87171" };
+    if (opts.length >= 20 && score === 3) return { label: "Strong", color: "var(--success-fg)" };
+    if (opts.length >= 14 && score >= 2)  return { label: "Good",   color: "var(--warning)" };
+    return { label: "Weak", color: "var(--danger)" };
   })();
 
   return (
@@ -129,14 +129,10 @@ export default function PasswordInput({ value, onChange }: Props) {
       {open && createPortal(
         <div
           ref={popoverRef}
+          className="float"
           style={{
             position: "fixed", top: coords.top, left: coords.left, zIndex: 1000,
-            background: "rgba(8,18,40,0.88)",
-            backdropFilter: "blur(20px) saturate(200%)",
-            WebkitBackdropFilter: "blur(20px) saturate(200%)",
-            border: "1px solid rgba(255,255,255,0.12)",
             borderRadius: "var(--radius-lg)", padding: "16px", width: "300px",
-            boxShadow: "0 12px 40px rgba(0,0,0,0.6), 0 0 40px rgba(30,80,200,0.10)",
           }}
         >
           {/* Mode */}
@@ -146,6 +142,7 @@ export default function PasswordInput({ value, onChange }: Props) {
                 key={key}
                 type="button"
                 onClick={() => switchMode(key)}
+                className={mode === key ? "chip on" : "chip"}
                 style={{
                   flex: 1, padding: "5px 0", fontSize: "12px", fontWeight: 600,
                   borderRadius: "var(--radius)",
@@ -161,10 +158,8 @@ export default function PasswordInput({ value, onChange }: Props) {
           </div>
 
           {/* Preview */}
-          <div style={{
+          <div className="well" style={{
             fontFamily: "monospace", fontSize: "13px",
-            background: "rgba(255,255,255,0.05)",
-            border: "1px solid rgba(255,255,255,0.10)",
             borderRadius: "var(--radius)", padding: "8px 10px", marginBottom: "12px",
             wordBreak: "break-all", lineHeight: 1.5,
           }}>
@@ -215,10 +210,11 @@ export default function PasswordInput({ value, onChange }: Props) {
                   key={key}
                   type="button"
                   onClick={() => toggleOpt(key)}
+                  className={opts[key] ? "chip on" : "chip"}
                   style={{
                     padding: "4px 10px", fontSize: "12px", borderRadius: "var(--radius)",
                     border: `1px solid ${opts[key] ? "var(--accent)" : "var(--border)"}`,
-                    background: opts[key] ? "rgba(77,157,224,0.12)" : "transparent",
+                    background: opts[key] ? "var(--accent-tint)" : "transparent",
                     color: opts[key] ? "var(--accent)" : "var(--muted)",
                     cursor: "pointer", transition: "all 0.15s",
                   }}
@@ -253,6 +249,7 @@ export default function PasswordInput({ value, onChange }: Props) {
                       type="button"
                       onClick={() => setPhrase({ separator: sep })}
                       title={sep === " " ? "Space" : `"${sep}"`}
+                      className={phraseOpts.separator === sep ? "chip on" : "chip"}
                       style={{
                         width: "34px", padding: "4px 0", fontSize: "12px",
                         fontFamily: "var(--mono)", borderRadius: "var(--radius)",
@@ -275,6 +272,7 @@ export default function PasswordInput({ value, onChange }: Props) {
                     key={key}
                     type="button"
                     onClick={() => setPhrase({ [key]: !phraseOpts[key] })}
+                    className={phraseOpts[key] ? "chip on" : "chip"}
                     style={{
                       padding: "4px 10px", fontSize: "12px", borderRadius: "var(--radius)",
                       border: `1px solid ${phraseOpts[key] ? "var(--accent)" : "var(--border)"}`,

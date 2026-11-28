@@ -159,21 +159,17 @@ export default function LockScreen({ notice, onUnlocked }: Props) {
     // margin:auto on the card centres it but, unlike align-items:center,
     // still lets it scroll from the top when it is taller than the screen
     <div style={{ display: "flex", height: "100%", overflowY: "auto", padding: "12px 0" }}>
-      <div className="glass" style={{
+      <div className="panel modal" style={{
         margin: "auto", flexShrink: 0,
         borderRadius: "var(--radius-lg)", padding: "40px", width: "min(360px, calc(100vw - 24px))",
-        boxShadow: "0 8px 48px rgba(0,0,0,0.5), 0 0 80px rgba(30,80,200,0.12)",
       }}>
         {showPicker && vaults && <VaultPicker list={vaults} onError={setError} />}
 
         {/* Icon + title */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: "28px", gap: "12px" }}>
-          <div style={{
-            width: "52px", height: "52px", borderRadius: "14px",
-            background: "rgba(77,157,224,0.12)",
-            border: "1px solid rgba(77,157,224,0.25)",
+          <div className="icon-tile" style={{
+            width: "52px", height: "52px",
             display: "flex", alignItems: "center", justifyContent: "center",
-            boxShadow: "0 0 24px rgba(77,157,224,0.15)",
           }}>
             {isNew
               ? <ShieldCheck size={26} color="var(--accent)" strokeWidth={1.75} />
@@ -296,8 +292,8 @@ export default function LockScreen({ notice, onUnlocked }: Props) {
             marginTop: "10px", padding: "8px 10px",
             display: "flex", alignItems: "center", gap: "8px",
             fontSize: "12.5px", color: "var(--fg-mid)",
-            border: "1px solid rgba(77,157,224,0.25)", borderRadius: "var(--r-md)",
-            background: "rgba(77,157,224,0.07)",
+            border: "1px solid rgba(var(--accent-rgb),0.25)", borderRadius: "var(--r-md)",
+            background: "var(--selected)",
           }}>
             <FileSpreadsheet size={15} strokeWidth={2} color="var(--accent)" style={{ flexShrink: 0 }} />
             <span style={{ flex: 1 }}>

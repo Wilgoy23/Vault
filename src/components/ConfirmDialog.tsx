@@ -12,7 +12,7 @@ interface Props {
   onCancel: () => void;
 }
 
-/** In-app replacement for window.confirm — matches the glass aesthetic
+/** In-app replacement for window.confirm — drawn in the current UI style
  * and keeps keyboard flow (Enter confirms, Escape cancels). */
 export default function ConfirmDialog({
   title, message,
@@ -35,24 +35,21 @@ export default function ConfirmDialog({
 
   return (
     <div
+      className="scrim"
       style={{
-        position: "fixed", inset: 0, background: "rgba(3,8,20,0.55)",
+        position: "fixed", inset: 0,
         padding: "env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)",
-        backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)",
         display: "flex", alignItems: "center", justifyContent: "center", zIndex: 300,
       }}
       onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
     >
-      <div className="glass" style={{
+      <div className="panel modal" style={{
         borderRadius: "var(--radius-lg)", padding: "20px", width: "min(340px, calc(100vw - 24px))",
-        boxShadow: "0 8px 48px rgba(0,0,0,0.6), 0 0 60px rgba(30,80,200,0.08)",
       }}>
         <div style={{ display: "flex", alignItems: "flex-start", gap: "12px", marginBottom: "16px" }}>
-          <div style={{
-            width: "34px", height: "34px", borderRadius: "9px", flexShrink: 0,
+          <div className={danger ? "tint-danger" : "tint"} style={{
+            width: "34px", height: "34px", borderRadius: "var(--r-md)", flexShrink: 0,
             display: "flex", alignItems: "center", justifyContent: "center",
-            background: danger ? "rgba(248,113,113,0.12)" : "rgba(77,157,224,0.12)",
-            color: danger ? "var(--danger)" : "var(--accent)",
           }}>
             <AlertTriangle size={16} strokeWidth={2} />
           </div>
@@ -69,16 +66,9 @@ export default function ConfirmDialog({
           </button>
           <button
             ref={confirmRef}
-            className="btn-primary"
+            className={danger ? "btn-primary danger" : "btn-primary"}
             onClick={onConfirm}
-            style={{
-              fontSize: "13px", padding: "7px 14px",
-              ...(danger ? {
-                background: "rgba(248,113,113,0.16)",
-                border: "1px solid rgba(248,113,113,0.4)",
-                color: "var(--danger)",
-              } : {}),
-            }}
+            style={{ fontSize: "13px", padding: "7px 14px" }}
           >
             {confirmLabel}
           </button>

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Palette, Shield, Monitor, Database, X, Keyboard, FolderSync, Vault } from "lucide-react";
-import { THEMES, Theme } from "../themes";
+import { Palette, Shapes, Shield, Monitor, Database, X, Keyboard, FolderSync, Vault } from "lucide-react";
+import { THEMES, Theme, STYLES, UiStyle } from "../themes";
 import { listen } from "@tauri-apps/api/event";
 import { exportVault, importVault, importCsv, enableAutostart, disableAutostart, changeMasterPassword, autofillStatus, setAutofillEnabled, syncStatus, chooseSyncFolder, joinSyncFolder, stopSync, SyncStatus, switchVault, addVault, renameVault, removeVault, webdavStatus, WebDavStatus, connectWebdav, joinWebdav, cancelWebdavJoin, stopWebdav, syncWebdavNow } from "../api";
 import MasterPasswordMeter from "./MasterPasswordMeter";
@@ -8,6 +8,20 @@ import ConfirmDialog from "./ConfirmDialog";
 import WebDavForm, { boxStyle } from "./WebDavForm";
 import { useIsMobile } from "../utils/platform";
 import { useVaultList } from "../utils/useVaultList";
+
+type Page = "appearance" | "security" | "sync" | "vaults" | "data" | "general";
+
+const PAGES: { id: Page; label: string; icon: React.ReactNode; desktopOnly?: boolean }[] = [
+  { id: "appearance", label: "Appearance", icon: <Palette size={15} strokeWidth={2} /> },
+  { id: "security",   label: "Security",   icon: <Shield size={15} strokeWidth={2} /> },
+  { id: "sync",       label: "Sync",       icon: <FolderSync size={15} strokeWidth={2} /> },
+  { id: "vaults",     label: "Vaults",     icon: <Vault size={15} strokeWidth={2} /> },
+  { id: "data",       label: "Backup & import", icon: <Database size={15} strokeWidth={2} /> },
+  { id: "general",    label: "General",    icon: <Monitor size={15} strokeWidth={2} />, desktopOnly: true },
+];
+
+// The page Settings last showed, so reopening it returns there
+let lastPage: Page = "appearance";
 
 const TIMEOUT_OPTIONS = [
   { label: "1 min",  ms: 1 * 60 * 1000 },
@@ -21,6 +35,8 @@ const TIMEOUT_OPTIONS = [
 interface Props {
   themeId: string;
   onThemeChange: (id: string) => void;
+  styleId: string;
+  onStyleChange: (id: string) => void;
   timeoutMs: number;
   onTimeoutChange: (ms: number) => void;
   autostart: boolean;
@@ -41,6 +57,7 @@ interface Props {
 
 export default function SettingsModal({
   themeId, onThemeChange,
+  styleId, onStyleChange,
   timeoutMs, onTimeoutChange,
   autostart, onAutostartChange,
   lockOnSystem, onLockOnSystemChange,
@@ -94,6 +111,11 @@ export default function SettingsModal({
   const [importError, setImportError] = useState("");
   const [exportStatus, setExportStatus] = useState("");
   const isMobile = useIsMobile();
+  const [page, setPageState] = useState<Page>(lastPage);
+  const setPage = (p: Page) => { lastPage = p; setPageState(p); };
+  const pages = PAGES.filter((p) => !p.desktopOnly || !isMobile);
+  // A desktop-only page remembered from before the platform was known
+  const current = pages.some((p) => p.id === page) ? page : "appearance";
 
   useEffect(() => {
     if (confirmImport) return; // the confirm dialog handles its own Escape
@@ -121,19 +143,19 @@ export default function SettingsModal({
 
   return (
     <div
-      className="sheet-backdrop"
+      className="sheet-backdrop scrim"
       style={{
-        position: "fixed", inset: 0, background: "rgba(3,8,20,0.70)",
+        position: "fixed", inset: 0,
         padding: "env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)",
-        backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
         display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100,
       }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="glass sheet" style={{
-        borderRadius: "var(--radius-lg)", width: "min(480px, calc(100vw - 24px))", maxHeight: "min(80vh, 100%)",
+      {/* A fixed height, so switching pages doesn't resize the dialog */}
+      <div className="panel modal sheet" style={{
+        borderRadius: "var(--radius-lg)", width: "min(720px, calc(100vw - 24px))",
+        height: "min(540px, calc(100vh - 24px))", maxHeight: "100%",
         overflow: "hidden", display: "flex", flexDirection: "column",
-        boxShadow: "0 8px 48px rgba(0,0,0,0.6), 0 0 80px rgba(30,80,200,0.08)",
       }}>
         {/* Header */}
         <div style={{
@@ -147,24 +169,82 @@ export default function SettingsModal({
           </button>
         </div>
 
-        {/* Scrollable body */}
-        <div style={{ overflowY: "auto", flex: 1, padding: "18px 22px" }}>
+        {isMobile && (
+          <nav className="m-chips settings-tabs" aria-label="Settings sections">
+            {pages.map((p) => (
+              <button
+                key={p.id}
+                className={`m-chip${current === p.id ? " active" : ""}`}
+                onClick={() => setPage(p.id)}
+                aria-current={current === p.id ? "page" : undefined}
+              >
+                {p.label}
+              </button>
+            ))}
+          </nav>
+        )}
 
-          <Section icon={<Palette size={13} strokeWidth={2} />} label="Appearance">
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "10px" }}>
-              {THEMES.map((theme) => (
-                <ThemeSwatch
-                  key={theme.id}
-                  theme={theme}
-                  active={themeId === theme.id}
-                  onSelect={() => onThemeChange(theme.id)}
+        <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+        {!isMobile && (
+          <nav className="settings-nav" aria-label="Settings sections">
+            {pages.map((p) => (
+              <button
+                key={p.id}
+                className={`settings-nav-item${current === p.id ? " active" : ""}`}
+                onClick={() => setPage(p.id)}
+                aria-current={current === p.id ? "page" : undefined}
+              >
+                {p.icon}
+                <span>{p.label}</span>
+              </button>
+            ))}
+          </nav>
+        )}
+
+        {/* The current page; only it scrolls */}
+        <div key={current} style={{ overflowY: "auto", flex: 1, minWidth: 0, padding: isMobile ? "4px 16px 24px" : "20px 24px" }}>
+
+          {current === "appearance" && <>
+          <Section icon={<Shapes size={13} strokeWidth={2} />} label="Style">
+            <div className="swatch-grid wide">
+              {STYLES.map((style) => (
+                <StyleSwatch
+                  key={style.id}
+                  uiStyle={style}
+                  active={styleId === style.id}
+                  onSelect={() => onStyleChange(style.id)}
                 />
               ))}
             </div>
+            <p style={{ fontSize: "12px", color: "var(--muted)", marginTop: "10px", lineHeight: 1.45 }}>
+              {(STYLES.find((s) => s.id === styleId) ?? STYLES[0]).description}.
+            </p>
           </Section>
 
           <Divider />
 
+          <Section icon={<Palette size={13} strokeWidth={2} />} label="Colours">
+            {(["dark", "light"] as const).map((mode) => (
+              <div key={mode} style={{ marginBottom: mode === "dark" ? "14px" : 0 }}>
+                <div style={{ fontSize: "11.5px", color: "var(--muted)", marginBottom: "8px" }}>
+                  {mode === "dark" ? "Dark" : "Light"}
+                </div>
+                <div className="swatch-grid">
+                  {THEMES.filter((t) => t.mode === mode).map((theme) => (
+                    <ThemeSwatch
+                      key={theme.id}
+                      theme={theme}
+                      active={themeId === theme.id}
+                      onSelect={() => onThemeChange(theme.id)}
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </Section>
+          </>}
+
+          {current === "security" && (
           <Section icon={<Shield size={13} strokeWidth={2} />} label="Security">
             <Row label="Auto-lock">
               <select
@@ -219,12 +299,11 @@ export default function SettingsModal({
             )}
             <ChangeMasterPassword />
           </Section>
+          )}
 
           {/* Desktop-only: autostart + global overlay shortcut don't exist on mobile */}
-          {!isMobile && (
+          {current === "general" && !isMobile && (
             <>
-              <Divider />
-
               <Section icon={<Monitor size={13} strokeWidth={2} />} label="System">
                 <Row label="Launch on startup">
                   <Toggle active={autostart} onToggle={handleAutostartToggle} />
@@ -241,9 +320,8 @@ export default function SettingsModal({
             </>
           )}
 
-          <Divider />
-
-          <Section icon={<Database size={13} strokeWidth={2} />} label="Data">
+          {current === "data" && (
+          <Section icon={<Database size={13} strokeWidth={2} />} label="Backup & import">
             <Row label="Vault backup">
               <div style={{ display: "flex", gap: "8px" }}>
                 <button className="btn-ghost" style={{ fontSize: "13px", padding: "6px 14px" }} onClick={handleExport} title="Save an encrypted backup">
@@ -258,11 +336,13 @@ export default function SettingsModal({
             {importError && <p className="error" style={{ margin: "0 0 12px", fontSize: "12px" }}>{importError}</p>}
             <CsvImportRow onImported={onCsvImported} />
           </Section>
+          )}
 
-          <SyncSection />
+          {current === "sync" && <SyncSection />}
 
-          <VaultsSection beforeChange={onBeforeVaultChange} />
+          {current === "vaults" && <VaultsSection beforeChange={onBeforeVaultChange} />}
 
+        </div>
         </div>
       </div>
 
@@ -382,7 +462,6 @@ function SyncSection() {
 
   return (
     <>
-      <Divider />
       <Section icon={<FolderSync size={13} strokeWidth={2} />} label="Sync">
         {showFolder && (
           <>
@@ -552,7 +631,6 @@ function VaultsSection({ beforeChange }: { beforeChange: () => Promise<void> }) 
 
   return (
     <>
-      <Divider />
       <Section icon={<Vault size={13} strokeWidth={2} />} label="Vaults">
         <Row label={active ? `Open: ${active.name}` : "Open vault"}>
           <button
@@ -579,8 +657,8 @@ function VaultsSection({ beforeChange }: { beforeChange: () => Promise<void> }) 
             style={{
               display: "flex", flexDirection: "column", gap: "10px",
               padding: "14px", marginBottom: "12px",
-              background: "rgba(255,255,255,0.03)",
-              border: "1px solid var(--border-dim)", borderRadius: "var(--r-md)",
+              background: "var(--well-bg)", boxShadow: "var(--well-shadow)",
+              border: "var(--well-border)", borderRadius: "var(--r-md)",
             }}
           >
             {adding && (
@@ -755,8 +833,8 @@ function ChangeMasterPassword() {
           style={{
             display: "flex", flexDirection: "column", gap: "10px",
             padding: "14px", marginBottom: "12px",
-            background: "rgba(255,255,255,0.03)",
-            border: "1px solid var(--border-dim)", borderRadius: "var(--r-md)",
+            background: "var(--well-bg)", boxShadow: "var(--well-shadow)",
+            border: "var(--well-border)", borderRadius: "var(--r-md)",
           }}
         >
           <input
@@ -826,12 +904,12 @@ function ThemeSwatch({ theme, active, onSelect }: { theme: Theme; active: boolea
   return (
     <button
       onClick={onSelect}
-      style={{ background: "transparent", border: "none", padding: 0, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" }}
+      style={{ background: "transparent", border: "none", boxShadow: "none", padding: 0, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" }}
     >
       <div style={{
-        width: "48px", height: "48px", borderRadius: "12px",
+        width: "48px", height: "48px", borderRadius: "min(12px, var(--r-lg))",
         background: theme.bg,
-        border: active ? `2px solid ${theme.accent}` : "2px solid rgba(255,255,255,0.12)",
+        border: active ? `2px solid ${theme.accent}` : "2px solid var(--border)",
         boxShadow: active ? `0 0 14px ${theme.accent}55` : "none",
         display: "flex", alignItems: "center", justifyContent: "center",
         transition: "border-color 0.15s, box-shadow 0.15s",
@@ -844,6 +922,25 @@ function ThemeSwatch({ theme, active, onSelect }: { theme: Theme; active: boolea
       </div>
       <span style={{ fontSize: "11px", color: active ? "var(--accent)" : "var(--muted)", fontWeight: active ? 600 : 400, transition: "color 0.15s" }}>
         {theme.name}
+      </span>
+    </button>
+  );
+}
+
+/** A miniature of each style, drawn in the current colours */
+function StyleSwatch({ uiStyle, active, onSelect }: { uiStyle: UiStyle; active: boolean; onSelect: () => void }) {
+  return (
+    <button
+      onClick={onSelect}
+      title={uiStyle.description}
+      aria-pressed={active}
+      style={{ background: "transparent", border: "none", boxShadow: "none", padding: 0, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px", minWidth: 0 }}
+    >
+      <div className={"style-swatch sw-" + uiStyle.id + (active ? " active" : "")}>
+        <div className="sw-card"><div className="sw-pill" /></div>
+      </div>
+      <span style={{ fontSize: "11px", color: active ? "var(--accent)" : "var(--muted)", fontWeight: active ? 600 : 400, transition: "color 0.15s", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>
+        {uiStyle.name}
       </span>
     </button>
   );
@@ -913,20 +1010,11 @@ function Toggle({ active, onToggle }: { active: boolean; onToggle: () => void })
   return (
     <button
       onClick={onToggle}
-      style={{
-        position: "relative", width: "40px", height: "22px",
-        borderRadius: "11px", border: "none", padding: 0, cursor: "pointer",
-        background: active ? "var(--accent)" : "rgba(255,255,255,0.15)",
-        boxShadow: active ? "0 0 10px var(--accent-glow)" : "none",
-        transition: "background 0.2s, box-shadow 0.2s", flexShrink: 0,
-      }}
+      role="switch"
+      aria-checked={active}
+      className={active ? "toggle on" : "toggle"}
     >
-      <div style={{
-        position: "absolute", top: "3px", left: active ? "21px" : "3px",
-        width: "16px", height: "16px", borderRadius: "50%",
-        background: "#fff", transition: "left 0.2s",
-        boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
-      }} />
+      <div className="toggle-knob" />
     </button>
   );
 }

@@ -102,15 +102,12 @@ export default function EntryList({
   }
 
   return (
-    <div style={{
+    <div className="sidebar" style={{
       width: fullWidth ? "100%" : "240px",
       flex: fullWidth ? 1 : undefined,
       flexShrink: 0,
       display: "flex", flexDirection: "column", height: "100%",
       borderRight: fullWidth ? "none" : "1px solid var(--border-dim)",
-      background: "rgba(4,11,22,0.55)",
-      backdropFilter: "blur(8px)",
-      WebkitBackdropFilter: "blur(8px)",
     }}>
       {/* Folder tabs */}
       <div style={{
@@ -139,8 +136,8 @@ export default function EntryList({
                 padding: "5px 9px 7px",
                 cursor: "pointer",
                 borderBottom: isActive ? "2px solid var(--accent)" : "2px solid transparent",
-                borderRadius: "5px 5px 0 0",
-                background: isActive ? "rgba(77,157,224,0.07)" : "transparent",
+                borderRadius: "max(0px, calc(var(--r-sm) - 1px)) max(0px, calc(var(--r-sm) - 1px)) 0 0",
+                background: isActive ? "var(--selected)" : "transparent",
                 letterSpacing: "0.01em",
                 whiteSpace: "nowrap",
                 transition: "color 0.12s, border-color 0.12s, background 0.12s",
@@ -159,7 +156,7 @@ export default function EntryList({
                     e.stopPropagation();
                   }}
                   onClick={(e) => e.stopPropagation()}
-                  style={{ width: "72px", fontSize: "11.5px", padding: "1px 4px", background: "rgba(255,255,255,0.08)", border: "1px solid var(--accent)", borderRadius: "3px", color: "inherit" }}
+                  style={{ width: "72px", fontSize: "11.5px", padding: "1px 4px", background: "var(--surface-hi)", border: "1px solid var(--accent)", borderRadius: "max(0px, calc(var(--r-sm) - 3px))", boxShadow: "none", color: "inherit" }}
                 />
               ) : (
                 <>
@@ -184,7 +181,7 @@ export default function EntryList({
         })}
 
         {newFolderMode && (
-          <div style={{ display: "flex", alignItems: "center", padding: "4px 8px 6px", background: "rgba(255,255,255,0.04)", border: "1px solid var(--border-dim)", borderBottom: "none", borderRadius: "5px 5px 0 0" }}>
+          <div style={{ display: "flex", alignItems: "center", padding: "4px 8px 6px", background: "var(--surface)", border: "1px solid var(--border-dim)", borderBottom: "none", borderRadius: "max(0px, calc(var(--r-sm) - 1px)) max(0px, calc(var(--r-sm) - 1px)) 0 0" }}>
             <input
               ref={newInputRef}
               value={newFolderName}
@@ -195,7 +192,7 @@ export default function EntryList({
                 if (e.key === "Escape") setNewFolderMode(false);
               }}
               placeholder="Name…"
-              style={{ width: "72px", fontSize: "11.5px", padding: "1px 4px", background: "transparent", border: "1px solid var(--accent)", borderRadius: "3px", color: "var(--text)" }}
+              style={{ width: "72px", fontSize: "11.5px", padding: "1px 4px", background: "transparent", border: "1px solid var(--accent)", borderRadius: "max(0px, calc(var(--r-sm) - 3px))", boxShadow: "none", color: "var(--text)" }}
             />
           </div>
         )}
@@ -252,6 +249,7 @@ export default function EntryList({
             <div
               key={entry.id}
               onClick={() => onSelect(entry)}
+              className={isSelected ? "entry-row selected" : "entry-row"}
               style={{
                 display: "flex", alignItems: "center", gap: "10px",
                 padding: "7px 8px 7px 9px",
@@ -263,7 +261,7 @@ export default function EntryList({
                 marginBottom: "1px",
                 userSelect: "none",
               }}
-              onMouseEnter={(e) => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.035)"; }}
+              onMouseEnter={(e) => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = "var(--hover)"; }}
               onMouseLeave={(e) => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = "transparent"; }}
             >
               <div className={`avatar ${avClass}`}>
@@ -272,7 +270,7 @@ export default function EntryList({
               <div style={{ minWidth: 0, flex: 1 }}>
                 <div style={{
                   fontWeight: 500, fontSize: "13px",
-                  color: isSelected ? "var(--fg-mid)" : "#A8C2DA",
+                  color: isSelected ? "var(--fg-mid)" : "var(--list-fg)",
                   letterSpacing: "-0.008em",
                   whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                   lineHeight: 1.2,
@@ -300,10 +298,11 @@ function TabBtn({ label, active, onClick }: { label: string; active: boolean; on
     <button
       onClick={onClick}
       style={{
-        background: active ? "rgba(77,157,224,0.07)" : "transparent",
+        background: active ? "var(--selected)" : "transparent",
         border: "none",
         borderBottom: active ? "2px solid var(--accent)" : "2px solid transparent",
-        borderRadius: "5px 5px 0 0",
+        borderRadius: "max(0px, calc(var(--r-sm) - 1px)) max(0px, calc(var(--r-sm) - 1px)) 0 0",
+        boxShadow: "none",
         color: active ? "var(--accent)" : "var(--muted-dim)",
         cursor: "pointer",
         fontSize: "11.5px",
