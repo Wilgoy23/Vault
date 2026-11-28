@@ -77,14 +77,12 @@ function EntryRow({ entry, detail, detailColor, onSelect }: {
       style={{
         display: "flex", alignItems: "center", gap: "10px",
         padding: "8px 12px", cursor: "pointer",
-        borderBottom: "1px solid rgba(255,255,255,0.045)",
-        transition: "background 0.11s",
+        borderBottom: "1px solid var(--border-dim)",
       }}
-      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.035)"; }}
-      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+      className="row-hover"
     >
       <div className={`avatar ${avatarClass(entry.name)}`}
-        style={{ width: "26px", height: "26px", borderRadius: "7px", fontSize: "11px", flexShrink: 0 }}>
+        style={{ width: "26px", height: "26px", borderRadius: "var(--r-sm)", fontSize: "11px", flexShrink: 0 }}>
         {entry.name.charAt(0).toUpperCase()}
       </div>
       <div style={{ minWidth: 0, flex: 1 }}>
@@ -111,20 +109,16 @@ function Section({ icon, title, count, tone, children, empty }: {
   empty: string;
 }) {
   return (
-    <div style={{
-      background: "rgba(255,255,255,0.03)", borderRadius: "var(--r-md)",
-      border: "1px solid var(--border-dim)", overflow: "hidden", marginBottom: "14px",
-    }}>
+    <div className="card" style={{ overflow: "hidden", marginBottom: "14px" }}>
       <div style={{
         display: "flex", alignItems: "center", gap: "8px",
         padding: "10px 12px", borderBottom: count > 0 ? "1px solid var(--border-dim)" : "none",
       }}>
         <span style={{ color: count > 0 ? tone : "var(--success)", display: "flex" }}>{icon}</span>
         <span style={{ fontSize: "12.5px", fontWeight: 600, flex: 1 }}>{title}</span>
-        <span style={{
-          fontSize: "11px", fontWeight: 700, padding: "1px 8px", borderRadius: "9px",
-          background: count > 0 ? "rgba(255,255,255,0.07)" : "rgba(34,197,94,0.12)",
-          color: count > 0 ? tone : "var(--success)",
+        <span className={count > 0 ? undefined : "tint-ok"} style={{
+          fontSize: "11px", fontWeight: 700, padding: "1px 8px", borderRadius: "min(9px, var(--r-pill))",
+          ...(count > 0 ? { background: "var(--surface-hi)", color: tone } : {}),
         }}>
           {count > 0 ? count : "✓"}
         </span>
@@ -147,11 +141,9 @@ export default function SecurityView({ entries, onSelect }: {
     <div style={{ flex: 1, overflowY: "auto", padding: "22px 26px" }}>
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "18px" }}>
-        <div style={{
-          width: "40px", height: "40px", borderRadius: "10px",
+        <div className={audit.issueCount > 0 ? "tint-warn" : "tint-ok"} style={{
+          width: "40px", height: "40px", borderRadius: "var(--r-md)",
           display: "flex", alignItems: "center", justifyContent: "center",
-          background: audit.issueCount > 0 ? "rgba(245,158,11,0.12)" : "rgba(34,197,94,0.12)",
-          color: audit.issueCount > 0 ? "var(--warning, #F59E0B)" : "var(--success)",
         }}>
           {audit.issueCount > 0 ? <ShieldAlert size={20} strokeWidth={2} /> : <ShieldCheck size={20} strokeWidth={2} />}
         </div>
@@ -198,13 +190,13 @@ export default function SecurityView({ entries, onSelect }: {
         icon={<KeyRound size={14} strokeWidth={2} />}
         title="Weak passwords"
         count={audit.weak.length}
-        tone="var(--warning, #F59E0B)"
+        tone="var(--warning)"
         empty="Every password scores Good or Strong."
       >
         {audit.weak.map(({ entry, score }) => (
           <EntryRow key={entry.id} entry={entry} onSelect={onSelect}
             detail={STRENGTH_LABELS[score]}
-            detailColor={score <= 1 ? "var(--danger)" : "var(--warning, #F59E0B)"} />
+            detailColor={score <= 1 ? "var(--danger)" : "var(--warning)"} />
         ))}
       </Section>
 
@@ -213,7 +205,7 @@ export default function SecurityView({ entries, onSelect }: {
         icon={<History size={14} strokeWidth={2} />}
         title="Not changed in over a year"
         count={audit.stale.length}
-        tone="var(--warning, #F59E0B)"
+        tone="var(--warning)"
         empty="Every password was changed within the last year."
       >
         {audit.stale.map((entry) => (

@@ -13,7 +13,7 @@ export default function MasterPasswordMeter({ password }: { password: string }) 
         {[1, 2, 3, 4].map((i) => (
           <div key={i} style={{
             flex: 1, height: "3px", borderRadius: "2px",
-            background: i <= feedback.score ? BAR_COLORS[feedback.score] : "rgba(255,255,255,0.10)",
+            background: i <= feedback.score ? BAR_COLORS[feedback.score] : "var(--track)",
             transition: "background 0.2s",
           }} />
         ))}

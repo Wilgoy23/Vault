@@ -5,13 +5,12 @@ import { vaultExists, isUnlocked, getOverlayShortcut, setOverlayShortcut, lock, 
 import LockScreen from "./components/LockScreen";
 import MainWindow from "./components/MainWindow";
 import { useIsMobile } from "./utils/platform";
-import { applyTheme, DEFAULT_THEME_ID } from "./themes";
+import { applyTheme, applyStyle, savedAppearance, THEME_KEY, STYLE_KEY } from "./themes";
 import "./app.css";
 
 type Screen = "loading" | "lock" | "main";
 
 const TIMEOUT_KEY = "vault_auto_lock_ms";
-const THEME_KEY   = "vault_theme";
 const DEFAULT_TIMEOUT = 5 * 60 * 1000;
 
 function ContextMenu() {
@@ -51,19 +50,15 @@ function ContextMenu() {
   return (
     <div
       ref={menuRef}
+      className="float"
       style={{
         position: "fixed",
         top: pos.y,
         left: pos.x,
         zIndex: 9999,
-        background: "rgba(8,18,38,0.96)",
-        backdropFilter: "blur(16px)",
-        WebkitBackdropFilter: "blur(16px)",
-        border: "1px solid rgba(255,255,255,0.10)",
-        borderRadius: "8px",
+        borderRadius: "var(--r-md)",
         padding: "4px",
         minWidth: "140px",
-        boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
       }}
     >
       <button
@@ -74,10 +69,10 @@ function ContextMenu() {
           padding: "7px 10px",
           background: "transparent", border: "none",
           color: "var(--danger)", fontSize: "13px", fontWeight: 500,
-          borderRadius: "5px", cursor: "pointer",
+          borderRadius: "var(--r-sm)", cursor: "pointer",
           transition: "background 0.1s",
         }}
-        onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(248,113,113,0.10)")}
+        onMouseEnter={(e) => (e.currentTarget.style.background = "var(--danger-glow)")}
         onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
       >
         <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
@@ -98,9 +93,8 @@ export default function App() {
     return saved !== null ? Number(saved) : DEFAULT_TIMEOUT;
   });
 
-  const [themeId, setThemeId] = useState<string>(() => {
-    return localStorage.getItem(THEME_KEY) ?? DEFAULT_THEME_ID;
-  });
+  const [themeId, setThemeId] = useState<string>(() => savedAppearance().themeId);
+  const [styleId, setStyleId] = useState<string>(() => savedAppearance().styleId);
 
   const [shortcut, setShortcut] = useState("Ctrl+Shift+P");
   // Why the vault was locked, when it wasn't the user's doing
@@ -119,6 +113,10 @@ export default function App() {
   }, [themeId]);
 
   useEffect(() => {
+    applyStyle(styleId);
+  }, [styleId]);
+
+  useEffect(() => {
     (async () => {
       const exists = await vaultExists();
       if (!exists) { setScreen("lock"); return; }
@@ -135,6 +133,11 @@ export default function App() {
   const handleThemeChange = (id: string) => {
     setThemeId(id);
     localStorage.setItem(THEME_KEY, id);
+  };
+
+  const handleStyleChange = (id: string) => {
+    setStyleId(id);
+    localStorage.setItem(STYLE_KEY, id);
   };
 
   // Throws on failure so Settings can show why the shortcut was rejected
@@ -230,6 +233,8 @@ export default function App() {
         onTimeoutChange={handleTimeoutChange}
         themeId={themeId}
         onThemeChange={handleThemeChange}
+        styleId={styleId}
+        onStyleChange={handleStyleChange}
         shortcut={shortcut}
         onShortcutChange={handleShortcutChange}
       />

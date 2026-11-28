@@ -99,6 +99,6 @@ export default function WebDavForm({ intro, submitLabel, busyLabel, initialUrl, 
 export const boxStyle: React.CSSProperties = {
   display: "flex", flexDirection: "column", gap: "10px",
   padding: "14px", marginBottom: "12px", textAlign: "left",
-  background: "rgba(255,255,255,0.03)",
-  border: "1px solid var(--border-dim)", borderRadius: "var(--r-md)",
+  background: "var(--well-bg)", boxShadow: "var(--well-shadow)",
+  border: "var(--well-border)", borderRadius: "var(--r-md)",
 };

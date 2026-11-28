@@ -6,7 +6,7 @@ import { isUnlocked, listEntries, unlock, writeClipboardText, scheduleClipboardC
 import { useVaultList } from "./utils/useVaultList";
 import { Entry } from "./types";
 import { generateTOTP, totpSecondsLeft } from "./utils/totp";
-import { applyTheme, DEFAULT_THEME_ID } from "./themes";
+import { applyTheme, applyStyle, savedAppearance } from "./themes";
 import "./app.css";
 
 const AV_CLASSES = [
@@ -123,7 +123,7 @@ function TotpDisplay({ secret }: { secret: string }) {
         {code.slice(0, 3)}&thinsp;{code.slice(3)}
       </span>
       <svg width="20" height="20" viewBox="0 0 22 22" style={{ flexShrink: 0 }}>
-        <circle cx="11" cy="11" r="8" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="2.5" />
+        <circle cx="11" cy="11" r="8" fill="none" className="ring-track" strokeWidth="2.5" />
         <circle
           cx="11" cy="11" r="8" fill="none"
           stroke={danger ? "var(--danger)" : "var(--accent)"}
@@ -146,9 +146,9 @@ function CopiedToast({ label }: { label: string }) {
   return (
     <div style={{
       position: "absolute", top: "50px", left: "50%", transform: "translateX(-50%)",
-      background: "rgba(34,197,94,0.18)", border: "1px solid rgba(34,197,94,0.35)",
+      background: "rgba(var(--success-rgb),0.18)", border: "1px solid rgba(var(--success-rgb),0.35)",
       borderRadius: "var(--r-md)", padding: "5px 14px",
-      fontSize: "12px", fontWeight: 600, color: "#4ADE80",
+      fontSize: "12px", fontWeight: 600, color: "var(--success-fg)",
       whiteSpace: "nowrap", pointerEvents: "none", zIndex: 10,
     }}>
       {label} copied!
@@ -202,7 +202,7 @@ function EntryDetail({ entry, onClose }: { entry: Entry; onClose: () => void }) 
   const fieldRow = (label: string, content: React.ReactNode, tall = false) => (
     <div style={{
       display: "flex", alignItems: "center", minHeight: tall ? "52px" : "44px",
-      padding: "0 14px", borderBottom: "1px solid rgba(255,255,255,0.045)",
+      padding: "0 14px", borderBottom: "1px solid var(--border-dim)",
     }}>
       <span style={{
         fontSize: "10px", fontWeight: 700, textTransform: "uppercase",
@@ -210,7 +210,7 @@ function EntryDetail({ entry, onClose }: { entry: Entry; onClose: () => void }) 
       }}>
         {label}
       </span>
-      <div style={{ width: "1px", height: "16px", background: "rgba(255,255,255,0.055)", margin: "0 10px 0 4px", flexShrink: 0 }} />
+      <div style={{ width: "1px", height: "16px", background: "var(--border-dim)", margin: "0 10px 0 4px", flexShrink: 0 }} />
       <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: 1, minWidth: 0 }}>
         {content}
       </div>
@@ -246,10 +246,7 @@ function EntryDetail({ entry, onClose }: { entry: Entry; onClose: () => void }) 
 
       {/* Fields */}
       <div style={{ flex: 1, overflowY: "auto" }}>
-        <div style={{
-          background: "rgba(255,255,255,0.03)", margin: "10px",
-          borderRadius: "var(--r-md)", overflow: "hidden", border: "1px solid var(--border-dim)",
-        }}>
+        <div className="card" style={{ margin: "10px", overflow: "hidden" }}>
           {entry.email && fieldRow("Email",
             <span style={{ fontSize: "13px", color: copied === "email" ? "var(--success)" : "var(--fg-mid)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", transition: "color 0.2s" }}>
               {entry.email}
@@ -286,15 +283,14 @@ function EntryDetail({ entry, onClose }: { entry: Entry; onClose: () => void }) 
 
       {/* Clipboard countdown */}
       {countdown !== null && (
-        <div style={{
+        <div className="clip-banner" style={{
           display: "flex", alignItems: "center", gap: "10px",
-          padding: "5px 14px", background: "rgba(77,157,224,0.07)",
-          borderTop: "1px solid rgba(77,157,224,0.15)", flexShrink: 0,
+          padding: "5px 14px", flexShrink: 0,
         }}>
           <span style={{ fontSize: "11px", color: "var(--muted)", whiteSpace: "nowrap" }}>
             Clears in {countdown}s
           </span>
-          <div style={{ flex: 1, height: "2px", background: "rgba(255,255,255,0.08)", borderRadius: "1px", overflow: "hidden" }}>
+          <div className="progress-track" style={{ flex: 1, height: "2px", borderRadius: "1px", overflow: "hidden" }}>
             <div style={{
               height: "100%", background: "var(--accent)", borderRadius: "1px",
               width: `${(countdown / 30) * 100}%`, transition: "width 1s linear",
@@ -322,9 +318,9 @@ function EntryDetail({ entry, onClose }: { entry: Entry; onClose: () => void }) 
 
 const kbdStyle: React.CSSProperties = {
   display: "inline-block",
-  background: "rgba(255,255,255,0.08)",
-  border: "1px solid rgba(255,255,255,0.14)",
-  borderRadius: "3px",
+  background: "var(--surface-hi)",
+  border: "1px solid var(--border)",
+  borderRadius: "max(0px, calc(var(--r-sm) - 3px))",
   padding: "1px 4px",
   fontSize: "9.5px",
   fontFamily: "var(--mono)",
@@ -350,7 +346,9 @@ export default function Overlay() {
   const selectedItemRef = useRef<HTMLDivElement>(null);
 
   const resetAndLoad = async () => {
-    applyTheme(localStorage.getItem("vault_theme") ?? DEFAULT_THEME_ID);
+    const { themeId, styleId } = savedAppearance();
+    applyTheme(themeId);
+    applyStyle(styleId);
     setSearch("");
     setSelectedEntry(null);
     setSelectedIndex(0);
@@ -451,14 +449,9 @@ export default function Overlay() {
   useEffect(() => { selectedItemRef.current?.scrollIntoView({ block: "nearest" }); }, [selectedIndex]);
 
   return (
-    <div style={{
+    <div className="float overlay-shell" style={{
       display: "flex", flexDirection: "column", height: "100vh",
-      background: "rgba(6,14,32,0.80)",
-      backdropFilter: "blur(24px) saturate(200%)",
-      WebkitBackdropFilter: "blur(24px) saturate(200%)",
-      border: "1px solid rgba(255,255,255,0.10)",
       borderRadius: "var(--radius-lg)", overflow: "hidden",
-      boxShadow: "0 16px 64px rgba(0,0,0,0.7), 0 0 80px rgba(30,80,200,0.15)",
     }}>
       {locked ? (
         <div style={{
@@ -531,7 +524,7 @@ export default function Overlay() {
                   style={{
                     padding: "9px 14px", cursor: "pointer",
                     borderBottom: "1px solid var(--border)",
-                    background: i === selectedIndex ? "rgba(77,157,224,0.12)" : "transparent",
+                    background: i === selectedIndex ? "rgba(var(--accent-rgb),0.12)" : "transparent",
                     borderLeft: i === selectedIndex ? "2px solid var(--accent)" : "2px solid transparent",
                     transition: "background 0.1s",
                     display: "flex", alignItems: "center", gap: "10px",

@@ -119,7 +119,7 @@ function TotpDisplay({ secret, copied, onCopy }: {
       </span>
       {/* Arc-style countdown ring */}
       <svg width="22" height="22" viewBox="0 0 22 22" style={{ flexShrink: 0 }}>
-        <circle cx="11" cy="11" r="8" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="2.5" />
+        <circle cx="11" cy="11" r="8" fill="none" className="ring-track" strokeWidth="2.5" />
         <circle
           cx="11" cy="11" r="8" fill="none"
           stroke={danger ? "var(--danger)" : "var(--accent)"}
@@ -250,17 +250,15 @@ function PasswordHistory({ entry, copied, onCopy, onRestore }: {
 function ClipboardBanner({ countdown }: { countdown: number | null }) {
   if (countdown === null) return null;
   return (
-    <div style={{
+    <div className="clip-banner" style={{
       display: "flex", alignItems: "center", gap: "12px",
       padding: "8px 16px",
-      background: "rgba(77,157,224,0.07)",
-      borderTop: "1px solid rgba(77,157,224,0.15)",
       flexShrink: 0,
     }}>
       <span style={{ fontSize: "12px", color: "var(--muted)", whiteSpace: "nowrap" }}>
         Clipboard clears in {countdown}s
       </span>
-      <div style={{ flex: 1, height: "2px", background: "rgba(255,255,255,0.08)", borderRadius: "1px", overflow: "hidden" }}>
+      <div className="progress-track" style={{ flex: 1, height: "2px", borderRadius: "1px", overflow: "hidden" }}>
         <div style={{
           height: "100%", background: "var(--accent)", borderRadius: "1px",
           width: `${(countdown / 30) * 100}%`,
@@ -367,10 +365,7 @@ export default function EntryDetail({ entry, folders, onUpdated, onDeleted, edit
         {/* Header */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "22px", flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
-            <div
-              className={`detail-av-lg avatar ${avClass}`}
-              style={{ boxShadow: "0 0 0 1px rgba(77,157,224,0.22), 0 3px 14px rgba(77,157,224,0.12)" }}
-            >
+            <div className={`detail-av-lg avatar ${avClass}`}>
               {entry.name.charAt(0).toUpperCase()}
             </div>
             <div>

@@ -113,13 +113,12 @@ export default function VaultPicker({ list, onError, beforeChange, placement = "
       {open && (
         <div
           role="menu"
+          className="float"
           style={{
             position: "absolute", top: "calc(100% + 6px)",
             ...(inTitlebar ? { left: 0 } : { left: "50%", transform: "translateX(-50%)" }),
             zIndex: 50, width: "min(280px, calc(100vw - 48px))",
-            background: "var(--select-bg)", border: "1px solid var(--border)",
             borderRadius: "var(--r-lg)", padding: "4px",
-            boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
           }}
         >
           {list.vaults.map((v) => (
